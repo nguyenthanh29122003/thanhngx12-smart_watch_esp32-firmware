@@ -4,7 +4,7 @@
 #include <MPU6050.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <freertos/semphr.h> // Thêm include
+#include <freertos/semphr.h>
 
 class StepCounter {
 public:
@@ -12,7 +12,9 @@ public:
     void begin();
     void startTask();
     void stopTask();
-    void getData(int& stepCount, float& distance, float& ax, float& ay, float& az);
+    void updateSensor();
+    void getData(int& stepCount, float& distance, float& ax, float& ay, float& az, 
+                 float& gx, float& gy, float& gz);
 
 private:
     MPU6050 mpu;
@@ -20,15 +22,15 @@ private:
     bool stepDetected;
     bool sensorActive;
     unsigned long lastStepTime;
-    static void taskFunction(void* pvParameters);
-    void updateSensor();
-    float lowPassFilter(float input, float previous, float alpha);
-    bool detectStep(float accMagnitude, float gyroMagnitude);
     int stepCountLocal;
     float distanceLocal;
     float axLocal, ayLocal, azLocal;
+    float gxLocal, gyLocal, gzLocal;
     float accFiltered, gyroFiltered;
     SemaphoreHandle_t dataMutex;
+    static void taskFunction(void* pvParameters);
+    float lowPassFilter(float input, float previous, float alpha);
+    bool detectStep(float accMagnitude, float gyroMagnitude);
 };
 
 #endif

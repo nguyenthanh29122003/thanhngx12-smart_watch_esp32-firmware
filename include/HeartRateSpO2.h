@@ -4,7 +4,7 @@
 #include <MAX30105.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <freertos/semphr.h> // Thêm include
+#include <freertos/semphr.h>
 
 class HeartRateSpO2 {
 public:
@@ -17,20 +17,17 @@ public:
 private:
     MAX30105 particleSensor;
     TaskHandle_t taskHandle;
-    bool sensorActive;
     static void taskFunction(void* pvParameters);
     void updateSensor();
     float lowPassFilter(float input, float previous, float alpha);
-    bool detectMotion(long irValue);
     float calculateSpO2(long redValue, long irValue);
-    int16_t rates[4];
-    byte rateSpot;
-    unsigned long lastBeat;
-    int heartRateLocal;
-    int spo2Local;
-    long irValueLocal;
-    long redValueLocal;
-    float irFiltered;
+    byte rates[4];           // Mảng lưu nhịp tim (từ example)
+    byte rateSpot;           // Vị trí trong mảng (từ example)
+    unsigned long lastBeat;  // Thời điểm nhịp cuối (từ example)
+    int heartRateLocal;      // Nhịp tim trung bình
+    int spo2Local;           // SpO2
+    long irValueLocal;       // Giá trị IR
+    long redValueLocal;      // Giá trị Red
     SemaphoreHandle_t dataMutex;
 };
 
