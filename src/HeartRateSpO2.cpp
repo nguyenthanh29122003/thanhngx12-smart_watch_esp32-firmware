@@ -1,125 +1,139 @@
-#include "HeartRateSpO2.h"
+#include "BluetoothManager.h"
 #include "Config.h"
-#include "heartRate.h"
 
-HeartRateSpO2::HeartRateSpO2() 
-    : particleSensor(), taskHandle(NULL), rateSpot(0), lastBeat(0),
-      heartRateLocal(0), spo2Local(-999), irValueLocal(0), redValueLocal(0) {
-    memset(rates, 0, sizeof(rates));
-    dataMutex = xSemaphoreCreateMutex();
-}
-
-void HeartRateSpO2::begin() {
-    if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
-        Serial.println("MAX30105 not found! Check wiring or I2C address.");
-        while (1);
-    } else {
-        particleSensor.setup(); // Cấu hình mặc định như example
-        particleSensor.setPulseAmplitudeRed(0x0A); // LED đỏ như example
-        particleSensor.setPulseAmplitudeGreen(0);  // Tắt LED xanh
-        Serial.println("MAX30105 initialized and active");
+class MyServerCallbacks : public NimBLEServerCallbacks {
+    void onConnect(NimBLEServer* pServer) override {
+        Serial.println("Device connected");
     }
+    void onDisconnect(NimBLEServer* pServer) override {
+        Serial.println("Device disconnected");
+        NimBLEDevice::startAdvertising();
+    }
+};
+
+void WifiConfigCallbacks::onWrite(NimBLECharacteristic* pCharacteristic) {
+    String value = pCharacteristic->getValue().c_str();
+    Serial.println("Received WiFi config: " + value);
+    
+    StaticJsonDocument<128> doc;
+    deserializeJson(doc, value);
+    manager->wifiSSID = doc["ssid"].as<String>();
+    manager->wifiPassword = doc["password"].as<String>();
+    manager->connectWiFi();
 }
 
-void HeartRateSpO2::startTask() {
-    xTaskCreate(taskFunction, "HeartRateSpO2Task", 4096, this, 2, &taskHandle);
+BluetoothManager::BluetoothManager() 
+    : pServer(nullptr), pDataCharacteristic(nullptr), pWifiConfigCharacteristic(nullptr), taskHandle(NULL),
+      wifiSSID(""), wifiPassword("") {
 }
 
-void HeartRateSpO2::stopTask() {
+void BluetoothManager::begin() {
+    NimBLEDevice::init("ESP32_SmartWatch");
+    setupBLE();
+}
+
+void BluetoothManager::setupBLE() {
+    pServer = NimBLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
+
+    NimBLEService* pService = pServer->createService(SERVICE_UUID);
+
+    pDataCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID,
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+    );
+
+    pWifiConfigCharacteristic = pService->createCharacteristic(
+        WIFI_CONFIG_UUID,
+        NIMBLE_PROPERTY::WRITE
+    );
+    pWifiConfigCharacteristic->setCallbacks(new WifiConfigCallbacks(this));
+
+    pService->start();
+    NimBLEAdvertising* pAdvertising = pServer->getAdvertising();
+    pAdvertising->start();
+    Serial.println("BLE advertising started");
+}
+
+void BluetoothManager::startTask() {
+    xTaskCreate(
+        taskFunction, "BluetoothTask", 4096, this, 1, &taskHandle
+    );
+}
+
+void BluetoothManager::stopTask() {
     if (taskHandle != NULL) {
         vTaskDelete(taskHandle);
         taskHandle = NULL;
-        particleSensor.shutDown();
-        Serial.println("HeartRateSpO2 task stopped");
+        Serial.println("Bluetooth task stopped");
     }
 }
 
-void HeartRateSpO2::taskFunction(void* pvParameters) {
-    HeartRateSpO2* instance = static_cast<HeartRateSpO2*>(pvParameters);
+void BluetoothManager::taskFunction(void* pvParameters) {
+    BluetoothManager* instance = static_cast<BluetoothManager*>(pvParameters);
     while (true) {
-        instance->updateSensor();
-        vTaskDelay(10 / portTICK_PERIOD_MS); // 10ms ~ 100Hz
+        instance->sendWifiStatus(); // Chỉ gửi trạng thái WiFi nếu cần
+        vTaskDelay(5000 / portTICK_PERIOD_MS); // Giảm tần suất, ví dụ 5s
     }
 }
 
-void HeartRateSpO2::updateSensor() {
-    long irValue = particleSensor.getIR();
-    long redValue = particleSensor.getRed();
+void BluetoothManager::sendHealthData(float ax, float ay, float az, int stepCount, int heartRate, int spo2, 
+                                      long irValue, long redValue, bool wifiConnected, float gx, float gy, float gz, const char* timestamp) {
+    StaticJsonDocument<256> doc;
+    doc["ax"] = ax;
+    doc["ay"] = ay;
+    doc["az"] = az;
+    doc["gx"] = gx;
+    doc["gy"] = gy;
+    doc["gz"] = gz;
+    doc["steps"] = stepCount;
+    doc["hr"] = heartRate;
+    doc["spo2"] = spo2;
+    doc["ir"] = irValue;
+    doc["red"] = redValue;
+    doc["wifi"] = wifiConnected;
+    doc["timestamp"] = timestamp;
 
-    // Debug dữ liệu
-    Serial.printf("IR: %ld, Red: %ld\n", irValue, redValue);
+    String jsonStr;
+    serializeJson(doc, jsonStr);
+    if (pDataCharacteristic) {
+        pDataCharacteristic->setValue(jsonStr.c_str());
+        pDataCharacteristic->notify();
+        Serial.println("Health data sent: " + jsonStr);
+    }
+}
 
-    if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-        irValueLocal = irValue;
-        redValueLocal = redValue;
+bool BluetoothManager::isWifiConnected() {
+    return WiFi.status() == WL_CONNECTED;
+}
 
-        // Đo nhịp tim (loại bỏ ngưỡng)
-        if (checkForBeat(irValue) == true) {
-            Serial.println("Beat detected"); // Debug
-            long delta = millis() - lastBeat;
-            lastBeat = millis();
-
-            float beatsPerMinute = 60 / (delta / 1000.0);
-
-            if (beatsPerMinute < 255 && beatsPerMinute > 20) {
-                rates[rateSpot++] = (byte)beatsPerMinute;
-                rateSpot %= 4;
-
-                int avg = 0;
-                for (byte x = 0; x < 4; x++) {
-                    avg += rates[x];
-                }
-                avg /= 4;
-                heartRateLocal = avg;
-                Serial.printf("HR: %d\n", heartRateLocal); // Debug
-            }
+void BluetoothManager::connectWiFi() {
+    if (wifiSSID.length() > 0 && wifiPassword.length() > 0) {
+        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+        Serial.print("Connecting to WiFi: ");
+        Serial.println(wifiSSID);
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+            delay(500);
+            Serial.print(".");
+            attempts++;
         }
-
-        // Tính SpO2 khi có ngón tay
-        if (irValue > 5000) {
-            float spo2 = calculateSpO2(redValue, irValue);
-            if (spo2 >= 90 && spo2 <= 100) {
-                spo2Local = spo2;
-            }
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("\nWiFi connected");
         } else {
-            heartRateLocal = 0;
-            spo2Local = -999;
+            Serial.println("\nWiFi connection failed");
         }
-
-        xSemaphoreGive(dataMutex);
     }
 }
 
-float HeartRateSpO2::lowPassFilter(float input, float previous, float alpha) {
-    return alpha * previous + (1 - alpha) * input;
-}
-
-float HeartRateSpO2::calculateSpO2(long redValue, long irValue) {
-    static long redDC = 0, irDC = 0, redAC = 0, irAC = 0;
-    redDC = lowPassFilter(redValue, redDC, 0.95);
-    irDC = lowPassFilter(irValue, irDC, 0.95);
-    redAC = redValue - redDC;
-    irAC = irValue - irDC;
-
-    if (irDC < 100 || redDC < 100 || irAC == 0 || redAC == 0) {
-        return -999;
-    }
-
-    float R = ((float)redAC / redDC) / ((float)irAC / irDC);
-    if (R < 0.1 || R > 5) {
-        return -999;
-    }
-
-    float spo2 = 104.0 - (17.0 * R);
-    return spo2;
-}
-
-void HeartRateSpO2::getData(int& heartRate, int& spo2, long& irValue, long& redValue) {
-    if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-        heartRate = heartRateLocal;
-        spo2 = spo2Local;
-        irValue = irValueLocal;
-        redValue = redValueLocal;
-        xSemaphoreGive(dataMutex);
+void BluetoothManager::sendWifiStatus() {
+    StaticJsonDocument<64> doc;
+    doc["wifi"] = isWifiConnected();
+    String jsonStr;
+    serializeJson(doc, jsonStr);
+    if (pDataCharacteristic) {
+        pDataCharacteristic->setValue(jsonStr.c_str());
+        pDataCharacteristic->notify();
+        Serial.println("WiFi status sent: " + jsonStr);
     }
 }
