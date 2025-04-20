@@ -13,8 +13,8 @@
 DisplayManager display;
 StepCounter stepCounter;
 HeartRateSpO2 heartRateSpO2;
-BluetoothManager ble;
 TimeManager timeManager;
+BluetoothManager ble(&timeManager);
 
 int stepCount = 0;
 float distance = 0;
@@ -85,7 +85,7 @@ void setup() {
 
     Serial.begin(115200);
     Wire.begin();
-    EEPROM.begin(512); // Khởi tạo EEPROM với kích thước tối thiểu
+    EEPROM.begin(512);
 
     Serial.println("Scanning I2C bus...");
     for (byte addr = 1; addr < 127; addr++) {
@@ -96,8 +96,8 @@ void setup() {
     }
 
     display.begin();
-    stepCounter.begin();
     heartRateSpO2.begin();
+    stepCounter.begin();
     ble.begin();
     timeManager.begin();
 
@@ -109,7 +109,6 @@ void setup() {
 
     xTaskCreate(buttonTask, "ButtonTask", 2048, NULL, 3, &buttonTaskHandle);
 
-    // Khôi phục stepCount từ EEPROM
     stepCount = EEPROM.readInt(STEP_COUNT_ADDR);
     Serial.printf("Restored step count: %d\n", stepCount);
     Serial.printf("Free heap at start: %d bytes\n", heap_caps_get_free_size(MALLOC_CAP_8BIT));
@@ -119,10 +118,18 @@ void loop() {
     stepCounter.getData(stepCount, distance, ax, ay, az, gx, gy, gz);
     heartRateSpO2.getData(heartRate, spo2, irValue, redValue);
     timeManager.getTime(currentTime, timeInitialized);
-    ble.updateData(ax, ay, az, stepCount, heartRate, spo2, irValue, redValue, ble.isWifiConnected(), gx, gy, gz);
-    display.updateData(ble.isWifiConnected(), stepCount, distance, heartRate, spo2, &currentTime, timeInitialized); // Sửa lỗi cú pháp &currentTime
+    
+    char timeStr[40]; // Tăng kích thước buffer lên (ví dụ: 40)
+    memset(timeStr, 0, sizeof(timeStr)); // Khởi tạo buffer bằng 0 cho an toàn
+    if (timeInitialized) {
+        strftime(timeStr, sizeof(timeStr), "%Y-%m-%dT%H:%M:%S+07:00", &currentTime);
+    } else {
+        strcpy(timeStr, "Not initialized");
+    }
+    
+    ble.updateData(ax, ay, az, stepCount, heartRate, spo2, irValue, redValue, ble.isWifiConnected(), gx, gy, gz, timeStr);
+    display.updateData(ble.isWifiConnected(), stepCount, distance, heartRate, spo2, &currentTime, timeInitialized);
 
-    // Kiểm tra ngày mới và reset bước chân
     if (timeInitialized) {
         int currentDay = currentTime.tm_mday;
         if (lastDay != -1 && currentDay != lastDay && currentTime.tm_hour == 0 && currentTime.tm_min == 0) {
@@ -135,12 +142,5 @@ void loop() {
         lastDay = currentDay;
     }
 
-    unsigned long currentMillis = millis();
-    if (currentMillis - lastSendTime >= sendInterval) {
-        ble.sendHealthData(ax, ay, az, stepCount, heartRate, spo2, irValue, redValue, ble.isWifiConnected());
-        lastSendTime = currentMillis;
-    }
-
-    // Serial.printf("Free heap: %d bytes\n", heap_caps_get_free_size(MALLOC_CAP_8BIT));
     vTaskDelay(100 / portTICK_PERIOD_MS);
 }

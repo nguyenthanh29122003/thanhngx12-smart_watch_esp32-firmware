@@ -42,4 +42,10 @@
 #define TASK_PRIORITY_STEP 1        // Ưu tiên trung bình cho StepCounter
 #define TASK_PRIORITY_TIME 1        // Ưu tiên trung bình cho TimeManager
 
+// Thêm vào Config.h
+#define SAVE_STEP_INTERVAL 50 // Lưu vào EEPROM mỗi 50 bước (có thể điều chỉnh)
+#define STEP_DETECT_MAX_GYRO 100.0 // Ngưỡng con quay tối đa để tính là bước đi (tránh rung lắc)
+#define STEP_RESET_THRESHOLD (THRESHOLD * 0.8f) // Ngưỡng gia tốc để reset cờ phát hiện bước
+#define I2C_MUTEX_TIMEOUT_MS 50 // Thời gian chờ tối đa (ms) để lấy I2C mutex
+
 #endif

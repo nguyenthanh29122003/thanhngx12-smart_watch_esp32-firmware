@@ -1,17 +1,18 @@
 #ifndef BLUETOOTH_MANAGER_H
 #define BLUETOOTH_MANAGER_H
 
-#include <NimBLEDevice.h> // Thay BLEDevice.h bằng NimBLEDevice.h
+#include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 #include "Config.h"
+#include "TimeManager.h" // Thêm include
 
 class BluetoothManager;
 
-class WifiConfigCallbacks : public NimBLECharacteristicCallbacks { // Thay BLECharacteristicCallbacks
+class WifiConfigCallbacks : public NimBLECharacteristicCallbacks {
 public:
     WifiConfigCallbacks(BluetoothManager* manager) : manager(manager) {}
     void onWrite(NimBLECharacteristic* pCharacteristic) override;
@@ -22,19 +23,18 @@ private:
 
 class BluetoothManager {
 public:
-    BluetoothManager();
+    BluetoothManager(TimeManager* timeManager); // Thêm con trỏ TimeManager
     void begin();
     void startTask();
     void stopTask();
     void updateData(float ax, float ay, float az, int stepCount, int heartRate, int spo2, 
-                    long irValue, long redValue, bool wifiConnected, float gx, float gy, float gz);
-    void sendHealthData(float ax, float ay, float az, int stepCount, int heartRate, int spo2, 
-                        long irValue, long redValue, bool wifiConnected);
+                   long irValue, long redValue, bool wifiConnected, float gx, float gy, float gz, const char* timestamp);
+    void sendData();
     bool isWifiConnected();
 
 private:
-    NimBLEServer* pServer; // Thay BLEServer
-    NimBLECharacteristic* pDataCharacteristic; // Thay BLECharacteristic
+    NimBLEServer* pServer;
+    NimBLECharacteristic* pDataCharacteristic;
     NimBLECharacteristic* pWifiConfigCharacteristic;
     TaskHandle_t taskHandle;
     SemaphoreHandle_t dataMutex;
@@ -45,14 +45,13 @@ private:
     int spo2Local;
     long irValueLocal, redValueLocal;
     bool wifiConnectedLocal;
-    bool bleConnected;
+    String timestampLocal;
     String wifiSSID;
     String wifiPassword;
+    TimeManager* timeManager; // Con trỏ đến TimeManager
     static void taskFunction(void* pvParameters);
-    void processData();
     void setupBLE();
     void connectWiFi();
-    void sendWifiStatus();
     friend class WifiConfigCallbacks;
 };
 

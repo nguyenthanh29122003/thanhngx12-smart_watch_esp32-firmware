@@ -1,11 +1,11 @@
 #include "BluetoothManager.h"
 #include "Config.h"
+#include <string.h>
 
 class MyServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer) override {
         Serial.println("Device connected");
     }
-
     void onDisconnect(NimBLEServer* pServer) override {
         Serial.println("Device disconnected");
         NimBLEDevice::startAdvertising();
@@ -14,21 +14,44 @@ class MyServerCallbacks : public NimBLEServerCallbacks {
 
 void WifiConfigCallbacks::onWrite(NimBLECharacteristic* pCharacteristic) {
     String value = pCharacteristic->getValue().c_str();
-    Serial.println("Received WiFi config: " + value);
+    Serial.println("Received data: " + value);
     
-    StaticJsonDocument<128> doc;
-    deserializeJson(doc, value);
-    manager->wifiSSID = doc["ssid"].as<String>();
-    manager->wifiPassword = doc["password"].as<String>();
-    manager->connectWiFi();
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, value);
+    if (error) {
+        Serial.println("JSON parse failed: " + String(error.c_str()));
+        return;
+    }
+
+    // Xử lý WiFi config
+    if (doc.containsKey("ssid") && doc.containsKey("password")) {
+        manager->wifiSSID = doc["ssid"].as<String>();
+        manager->wifiPassword = doc["password"].as<String>();
+        manager->connectWiFi();
+    }
+    // Xử lý thời gian
+    else if (doc.containsKey("time")) {
+        struct tm timeinfo = {};
+        timeinfo.tm_year = doc["time"]["year"].as<int>() - 1900; // struct tm: năm từ 1900
+        timeinfo.tm_mon = doc["time"]["month"].as<int>() - 1;    // 0-11
+        timeinfo.tm_mday = doc["time"]["day"].as<int>();
+        timeinfo.tm_hour = doc["time"]["hour"].as<int>();
+        timeinfo.tm_min = doc["time"]["minute"].as<int>();
+        timeinfo.tm_sec = doc["time"]["second"].as<int>();
+        // Bỏ qua timezone (giả định đã được xử lý ở client, +7)
+        manager->timeManager->setTimeFromBLE(timeinfo);
+    }
+    else {
+        Serial.println("Unknown JSON format");
+    }
 }
 
-BluetoothManager::BluetoothManager() 
-    : pServer(nullptr), pDataCharacteristic(nullptr), pWifiConfigCharacteristic(nullptr), taskHandle(NULL), 
+BluetoothManager::BluetoothManager(TimeManager* timeManager) 
+    : pServer(nullptr), pDataCharacteristic(nullptr), pWifiConfigCharacteristic(nullptr), taskHandle(NULL),
       axLocal(0), ayLocal(0), azLocal(0), gxLocal(0), gyLocal(0), gzLocal(0),
       stepCountLocal(0), heartRateLocal(0), spo2Local(0), 
-      irValueLocal(0), redValueLocal(0), wifiConnectedLocal(false), bleConnected(false),
-      wifiSSID(""), wifiPassword("") {
+      irValueLocal(0), redValueLocal(0), wifiConnectedLocal(false),
+      timestampLocal("Not initialized"), wifiSSID(""), wifiPassword(""), timeManager(timeManager) {
     dataMutex = xSemaphoreCreateMutex();
 }
 
@@ -46,7 +69,7 @@ void BluetoothManager::setupBLE() {
     pDataCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
-    ); // Xóa createDescriptor("2902") vì NimBLE tự động thêm
+    );
 
     pWifiConfigCharacteristic = pService->createCharacteristic(
         WIFI_CONFIG_UUID,
@@ -55,7 +78,6 @@ void BluetoothManager::setupBLE() {
     pWifiConfigCharacteristic->setCallbacks(new WifiConfigCallbacks(this));
 
     pService->start();
-
     NimBLEAdvertising* pAdvertising = pServer->getAdvertising();
     pAdvertising->start();
     Serial.println("BLE advertising started");
@@ -78,41 +100,13 @@ void BluetoothManager::stopTask() {
 void BluetoothManager::taskFunction(void* pvParameters) {
     BluetoothManager* instance = static_cast<BluetoothManager*>(pvParameters);
     while (true) {
-        instance->processData();
-        instance->sendWifiStatus();
+        instance->sendData();
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
 
-void BluetoothManager::processData() {
-    StaticJsonDocument<256> doc;
-    if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-        doc["ax"] = axLocal;
-        doc["ay"] = ayLocal;
-        doc["az"] = azLocal;
-        doc["gx"] = gxLocal;
-        doc["gy"] = gyLocal;
-        doc["gz"] = gzLocal;
-        doc["steps"] = stepCountLocal;
-        doc["hr"] = heartRateLocal;
-        doc["spo2"] = spo2Local;
-        doc["ir"] = irValueLocal;
-        doc["red"] = redValueLocal;
-        doc["wifi"] = wifiConnectedLocal;
-        xSemaphoreGive(dataMutex);
-    }
-
-    String jsonStr;
-    serializeJson(doc, jsonStr);
-    if (pDataCharacteristic) {
-        pDataCharacteristic->setValue(jsonStr.c_str());
-        pDataCharacteristic->notify();
-        Serial.println("Sent: " + jsonStr);
-    }
-}
-
 void BluetoothManager::updateData(float ax, float ay, float az, int stepCount, int heartRate, int spo2, 
-                                 long irValue, long redValue, bool wifiConnected, float gx, float gy, float gz) {
+                                 long irValue, long redValue, bool wifiConnected, float gx, float gy, float gz, const char* timestamp) {
     if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
         axLocal = ax;
         ayLocal = ay;
@@ -126,29 +120,55 @@ void BluetoothManager::updateData(float ax, float ay, float az, int stepCount, i
         irValueLocal = irValue;
         redValueLocal = redValue;
         wifiConnectedLocal = wifiConnected;
+        timestampLocal = (timestamp != nullptr) ? String(timestamp) : "Not initialized";
         xSemaphoreGive(dataMutex);
     }
 }
 
-void BluetoothManager::sendHealthData(float ax, float ay, float az, int stepCount, int heartRate, int spo2, 
-                                      long irValue, long redValue, bool wifiConnected) {
-    StaticJsonDocument<256> doc;
-    doc["ax"] = ax;
-    doc["ay"] = ay;
-    doc["az"] = az;
-    doc["steps"] = stepCount;
-    doc["hr"] = heartRate;
-    doc["spo2"] = spo2;
-    doc["ir"] = irValue;
-    doc["red"] = redValue;
-    doc["wifi"] = wifiConnected;
+void BluetoothManager::sendData() {
+    String jsonStr = "{";
+    float _ax, _ay, _az, _gx, _gy, _gz;
+    int _steps, _hr, _spo2;
+    long _ir, _red;
+    bool _wifi;
+    String _timestamp;
 
-    String jsonStr;
-    serializeJson(doc, jsonStr);
-    if (pDataCharacteristic) {
-        pDataCharacteristic->setValue(jsonStr.c_str());
-        pDataCharacteristic->notify();
-        Serial.println("Health data sent: " + jsonStr);
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _ax = axLocal; _ay = ayLocal; _az = azLocal;
+        _gx = gxLocal; _gy = gyLocal; _gz = gzLocal;
+        _steps = stepCountLocal; _hr = heartRateLocal; _spo2 = spo2Local;
+        _ir = irValueLocal; _red = redValueLocal;
+        _wifi = wifiConnectedLocal; _timestamp = timestampLocal;
+        xSemaphoreGive(dataMutex);
+
+        jsonStr += "\"ax\":" + String(_ax, 2);
+        jsonStr += ", \"ay\":" + String(_ay, 2);
+        jsonStr += ", \"az\":" + String(_az, 2);
+        jsonStr += ", \"gx\":" + String(_gx, 2);
+        jsonStr += ", \"gy\":" + String(_gy, 2);
+        jsonStr += ", \"gz\":" + String(_gz, 2);
+        jsonStr += ", \"steps\":" + String(_steps);
+        jsonStr += ", \"hr\":" + String(_hr);
+        jsonStr += ", \"spo2\":" + String(_spo2);
+        jsonStr += ", \"ir\":" + String(_ir);
+        jsonStr += ", \"red\":" + String(_red);
+        jsonStr += ", \"wifi\":" + String(_wifi ? "true" : "false");
+        jsonStr += ", \"timestamp\":\"" + _timestamp + "\"";
+        jsonStr += "}";
+
+        if (pDataCharacteristic != nullptr && pServer->getConnectedCount() > 0) {
+            try {
+                Serial.println("Sending JSON (len " + String(jsonStr.length()) + "): " + jsonStr);
+                pDataCharacteristic->setValue(jsonStr);
+                pDataCharacteristic->notify();
+            } catch (const std::exception& e) {
+                Serial.printf("BLE Send Exception: %s\n", e.what());
+            } catch (...) {
+                Serial.println("Unknown BLE Send Exception");
+            }
+        }
+    } else {
+        Serial.println("Mutex timeout in sendData! Skipping send.");
     }
 }
 
@@ -174,18 +194,5 @@ void BluetoothManager::connectWiFi() {
             Serial.println("\nWiFi connection failed");
             wifiConnectedLocal = false;
         }
-        sendWifiStatus();
-    }
-}
-
-void BluetoothManager::sendWifiStatus() {
-    StaticJsonDocument<64> doc;
-    doc["wifi"] = isWifiConnected();
-    String jsonStr;
-    serializeJson(doc, jsonStr);
-    if (pDataCharacteristic) {
-        pDataCharacteristic->setValue(jsonStr.c_str());
-        pDataCharacteristic->notify();
-        Serial.println("WiFi status sent: " + jsonStr);
     }
 }

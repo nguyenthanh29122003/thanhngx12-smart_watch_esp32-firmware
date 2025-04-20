@@ -4,26 +4,27 @@
 #include <time.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <freertos/semphr.h> // Thêm include cho semaphore
+#include <freertos/semphr.h>
 
 class TimeManager {
 public:
     TimeManager();
     void begin();
-    void startTask();  // Khởi động task
-    void stopTask();   // Dừng task
-    void getTime(struct tm& timeinfo, bool& timeInitialized); // Lấy thời gian an toàn
+    void startTask();
+    void stopTask();
+    void getTime(struct tm& timeinfo, bool& timeInitialized);
+    void setTimeFromBLE(const struct tm& timeinfo); // Thêm hàm nhận thời gian BLE
 
 private:
     TaskHandle_t taskHandle;
     bool timeInitialized;
     struct tm timeinfoLocal;
     unsigned long lastSyncTime;
-    static void taskFunction(void* pvParameters); // Hàm task
-    void updateTimeLocal(); // Cập nhật thời gian cục bộ
-    bool syncNTP(); // Đồng bộ với NTP
+    static void taskFunction(void* pvParameters);
+    void updateTimeLocal();
+    bool syncNTP();
     int daysInMonth(int month, int year);
-    SemaphoreHandle_t timeMutex; // Sử dụng SemaphoreHandle_t với include đúng
+    SemaphoreHandle_t timeMutex;
 };
 
 #endif

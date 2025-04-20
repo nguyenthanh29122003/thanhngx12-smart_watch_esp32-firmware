@@ -1,9 +1,9 @@
 #include "TimeManager.h"
 #include "Config.h"
-#include <Arduino.h>      // Cho Serial, millis
-#include <WiFi.h>         // Cho WiFi
-#include <cstring>        // Cho memset
-#include <esp_sntp.h>     // Cho configTime, getLocalTime
+#include <Arduino.h>
+#include <WiFi.h>
+#include <cstring>
+#include <esp_sntp.h>
 
 TimeManager::TimeManager() 
     : taskHandle(NULL), timeInitialized(false), lastSyncTime(0) {
@@ -19,12 +19,7 @@ void TimeManager::begin() {
 
 void TimeManager::startTask() {
     xTaskCreate(
-        taskFunction,       // Hàm task
-        "TimeTask",         // Tên task
-        1536,               // Stack size tối ưu
-        this,               // Tham số
-        TASK_PRIORITY_TIME, // Độ ưu tiên từ Config.h
-        &taskHandle         // Handle
+        taskFunction, "TimeTask", 1536, this, TASK_PRIORITY_TIME, &taskHandle
     );
 }
 
@@ -40,7 +35,7 @@ void TimeManager::taskFunction(void* pvParameters) {
     TimeManager* instance = static_cast<TimeManager*>(pvParameters);
     while (true) {
         instance->updateTimeLocal();
-        vTaskDelay(1000 / portTICK_PERIOD_MS); // Cập nhật mỗi giây
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
 
@@ -54,7 +49,6 @@ void TimeManager::updateTimeLocal() {
             }
         }
     } else {
-        // Cập nhật thời gian cục bộ
         if (xSemaphoreTake(timeMutex, portMAX_DELAY) == pdTRUE) {
             timeinfoLocal.tm_sec++;
             if (timeinfoLocal.tm_sec >= 60) {
@@ -78,8 +72,8 @@ void TimeManager::updateTimeLocal() {
                 }
             }
 
-            // Đồng bộ NTP mỗi 1 giờ (3600000ms) nếu WiFi khả dụng
-            if (millis() - lastSyncTime >= 3600000) {
+            // Đồng bộ NTP mỗi 1 giờ nếu WiFi khả dụng và chưa nhận thời gian BLE
+            if (millis() - lastSyncTime >= 3600000 && WiFi.status() == WL_CONNECTED) {
                 if (syncNTP()) {
                     lastSyncTime = millis();
                 }
@@ -117,6 +111,18 @@ void TimeManager::getTime(struct tm& timeinfo, bool& initialized) {
     if (xSemaphoreTake(timeMutex, portMAX_DELAY) == pdTRUE) {
         timeinfo = timeinfoLocal;
         initialized = timeInitialized;
+        xSemaphoreGive(timeMutex);
+    }
+}
+
+void TimeManager::setTimeFromBLE(const struct tm& timeinfo) {
+    if (xSemaphoreTake(timeMutex, portMAX_DELAY) == pdTRUE) {
+        timeinfoLocal = timeinfo;
+        timeInitialized = true;
+        lastSyncTime = millis();
+        Serial.printf("Time set from BLE: %04d-%02d-%02d %02d:%02d:%02d\n",
+                      timeinfoLocal.tm_year + 1900, timeinfoLocal.tm_mon + 1, timeinfoLocal.tm_mday,
+                      timeinfoLocal.tm_hour, timeinfoLocal.tm_min, timeinfoLocal.tm_sec);
         xSemaphoreGive(timeMutex);
     }
 }
