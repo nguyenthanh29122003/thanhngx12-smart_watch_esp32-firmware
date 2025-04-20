@@ -1,12 +1,15 @@
+// src/StepCounter.cpp
 #include "StepCounter.h"
 #include "Config.h"
 #include <EEPROM.h>
 
+extern SemaphoreHandle_t i2cMutex;
+
 #define EEPROM_SIZE 512
-#define STEP_COUNT_ADDR 0 // Địa chỉ lưu stepCount trong EEPROM
+#define STEP_COUNT_ADDR 0
 
 StepCounter::StepCounter() 
-    : mpu(), taskHandle(NULL), stepDetected(false), sensorActive(false), lastStepTime(0),
+    : mpu(), taskHandle(NULL), stepDetected(false), sensorActive(true), lastStepTime(0),
       stepCountLocal(0), distanceLocal(0), axLocal(0), ayLocal(0), azLocal(0),
       accFiltered(0), gyroFiltered(0), gxLocal(0), gyLocal(0), gzLocal(0) {
     dataMutex = xSemaphoreCreateMutex();
@@ -18,35 +21,33 @@ void StepCounter::begin() {
         return;
     }
 
-    mpu.initialize();
-    if (!mpu.testConnection()) {
-        Serial.println("MPU6050 connection failed");
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+        Serial.println("Initializing MPU6050...");
+        mpu.initialize();
+        if (!mpu.testConnection()) {
+            Serial.println("MPU6050 connection failed");
+        } else {
+            Serial.println("MPU6050 initialized");
+            mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
+            mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
+            // Không sử dụng chế độ ngủ
+            sensorActive = true;
+        }
+        xSemaphoreGive(i2cMutex);
     } else {
-        Serial.println("MPU6050 initialized");
-        mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
-        mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
-        mpu.setSleepEnabled(true);
-        sensorActive = false;
+        Serial.println("I2C mutex timeout in StepCounter begin");
     }
 
-    // Khôi phục stepCount từ EEPROM khi khởi động
     stepCountLocal = EEPROM.readInt(STEP_COUNT_ADDR);
-    if (stepCountLocal < 0 || stepCountLocal > 100000) { // Giới hạn hợp lý
-        stepCountLocal = 0; // Reset nếu giá trị không hợp lệ
+    if (stepCountLocal < 0 || stepCountLocal > 100000) {
+        stepCountLocal = 0;
     }
     distanceLocal = stepCountLocal * STEP_LENGTH;
     Serial.printf("Restored step count: %d\n", stepCountLocal);
 }
 
 void StepCounter::startTask() {
-    xTaskCreate(
-        taskFunction,       // Hàm task
-        "StepCounterTask",  // Tên task
-        4096,               // Stack size
-        this,               // Tham số
-        1,                  // Độ ưu tiên
-        &taskHandle         // Handle
-    );
+    xTaskCreate(taskFunction, "StepCounterTask", 4096, this, 1, &taskHandle);
 }
 
 void StepCounter::stopTask() {
@@ -66,26 +67,62 @@ void StepCounter::taskFunction(void* pvParameters) {
 }
 
 void StepCounter::updateSensor() {
-    if (!mpu.testConnection()) {
-        Serial.println("MPU6050 not responding, skipping update");
+    bool connectionValid = false;
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+        connectionValid = mpu.testConnection();
+        xSemaphoreGive(i2cMutex);
+    } else {
+        Serial.println("I2C mutex timeout in StepCounter (testConnection)");
+        return;
+    }
+
+    if (!connectionValid) {
+        Serial.println("MPU6050 not responding, attempting reinitialization...");
+        if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+            mpu.initialize();
+            if (mpu.testConnection()) {
+                Serial.println("MPU6050 reinitialized successfully");
+                mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
+                mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
+            } else {
+                Serial.println("MPU6050 reinitialization failed");
+            }
+            xSemaphoreGive(i2cMutex);
+        }
         return;
     }
 
     int16_t ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw;
-    mpu.getAcceleration(&ax_raw, &ay_raw, &az_raw);
-    mpu.getRotation(&gx_raw, &gy_raw, &gz_raw);
+    bool readSuccess = false;
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+        Serial.println("Reading MPU6050 data...");
+        mpu.getAcceleration(&ax_raw, &ay_raw, &az_raw);
+        mpu.getRotation(&gx_raw, &gy_raw, &gz_raw);
+        xSemaphoreGive(i2cMutex);
+        readSuccess = true;
+    } else {
+        Serial.println("I2C mutex timeout in StepCounter (read data)");
+        return;
+    }
 
-    if (ax_raw == 0 && ay_raw == 0 && az_raw == 0 && gx_raw == 0 && gy_raw == 0 && gz_raw == 0) {
+    if (!readSuccess || (ax_raw == 0 && ay_raw == 0 && az_raw == 0 && gx_raw == 0 && gy_raw == 0 && gz_raw == 0)) {
         Serial.println("MPU6050 returned all zeros, possible I2C error");
         return;
     }
 
-    float ax = ax_raw / 16384.0; // Chuyển sang g
+    float ax = ax_raw / 16384.0;
     float ay = ay_raw / 16384.0;
     float az = az_raw / 16384.0;
-    float gx = gx_raw / 131.0;   // Chuyển sang độ/giây
+    float gx = gx_raw / 131.0;
     float gy = gy_raw / 131.0;
     float gz = gz_raw / 131.0;
+
+    static unsigned long lastDebugTime = 0;
+    if (millis() - lastDebugTime > 1000) {
+        Serial.printf("MPU6050 - ax: %.2f, ay: %.2f, az: %.2f, gx: %.2f, gy: %.2f, gz: %.2f\n",
+                      ax, ay, az, gx, gy, gz);
+        lastDebugTime = millis();
+    }
 
     float accMagnitude = sqrt(ax * ax + ay * ay + az * az);
     float gyroMagnitude = sqrt(gx * gx + gy * gy + gz * gz);
@@ -94,32 +131,25 @@ void StepCounter::updateSensor() {
     gyroFiltered = lowPassFilter(gyroMagnitude, gyroFiltered, 0.9);
 
     if (accFiltered > 0.5 || gyroFiltered > 20) {
-        if (!sensorActive) {
-            mpu.setSleepEnabled(false);
-            sensorActive = true;
-            accFiltered = accMagnitude;
-            gyroFiltered = gyroMagnitude;
-        }
-
         if (detectStep(accFiltered, gyroFiltered)) {
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
                 stepCountLocal++;
                 distanceLocal = stepCountLocal * STEP_LENGTH;
                 lastStepTime = millis();
                 stepDetected = true;
-                // Lưu vào EEPROM mỗi khi bước chân tăng
-                EEPROM.writeInt(STEP_COUNT_ADDR, stepCountLocal);
-                EEPROM.commit();
+
+                if (stepCountLocal % SAVE_STEP_INTERVAL == 0) {
+                    EEPROM.writeInt(STEP_COUNT_ADDR, stepCountLocal);
+                    EEPROM.commit();
+                    Serial.printf("Saved step count to EEPROM: %d\n", stepCountLocal);
+                }
+
+                Serial.printf("Step detected, total: %d\n", stepCountLocal);
                 xSemaphoreGive(dataMutex);
             }
         }
         if (accFiltered < THRESHOLD - 0.5) {
             stepDetected = false;
-        }
-    } else {
-        if (sensorActive) {
-            mpu.setSleepEnabled(true);
-            sensorActive = false;
         }
     }
 

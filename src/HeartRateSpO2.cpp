@@ -1,6 +1,9 @@
+// src/HeartRateSpO2.cpp
 #include "HeartRateSpO2.h"
 #include "Config.h"
 #include "heartRate.h"
+
+extern SemaphoreHandle_t i2cMutex;
 
 HeartRateSpO2::HeartRateSpO2() 
     : particleSensor(), taskHandle(NULL), rateSpot(0), lastBeat(0),
@@ -14,9 +17,9 @@ void HeartRateSpO2::begin() {
         Serial.println("MAX30105 not found! Check wiring or I2C address.");
         while (1);
     } else {
-        particleSensor.setup(); // Cấu hình mặc định như example
-        particleSensor.setPulseAmplitudeRed(0x0A); // LED đỏ như example
-        particleSensor.setPulseAmplitudeGreen(0);  // Tắt LED xanh
+        particleSensor.setup();
+        particleSensor.setPulseAmplitudeRed(0x0A);
+        particleSensor.setPulseAmplitudeGreen(0);
         Serial.println("MAX30105 initialized and active");
     }
 }
@@ -38,24 +41,38 @@ void HeartRateSpO2::taskFunction(void* pvParameters) {
     HeartRateSpO2* instance = static_cast<HeartRateSpO2*>(pvParameters);
     while (true) {
         instance->updateSensor();
-        vTaskDelay(10 / portTICK_PERIOD_MS); // 10ms ~ 100Hz
+        vTaskDelay(20 / portTICK_PERIOD_MS); // 50Hz
     }
 }
 
 void HeartRateSpO2::updateSensor() {
-    long irValue = particleSensor.getIR();
-    long redValue = particleSensor.getRed();
+    long irValue = 0, redValue = 0;
 
-    // Debug dữ liệu
-    // Serial.printf("IR: %ld, Red: %ld\n", irValue, redValue);
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+        // Chỉ log mutex khi cần debug
+        // Serial.println("I2C mutex taken by HeartRateSpO2");
+        irValue = particleSensor.getIR();
+        redValue = particleSensor.getRed();
+        xSemaphoreGive(i2cMutex);
+        // Serial.println("I2C mutex released by HeartRateSpO2");
+    } else {
+        Serial.println("I2C mutex timeout in HeartRateSpO2");
+        return;
+    }
+
+    // Debug dữ liệu cảm biến
+    static unsigned long lastDebugTime = 0;
+    if (millis() - lastDebugTime > 1000) { // In mỗi giây
+        Serial.printf("MAX30102 - IR: %ld, Red: %ld\n", irValue, redValue);
+        lastDebugTime = millis();
+    }
 
     if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
         irValueLocal = irValue;
         redValueLocal = redValue;
 
-        // Đo nhịp tim (loại bỏ ngưỡng)
         if (checkForBeat(irValue) == true) {
-            Serial.println("Beat detected"); // Debug
+            Serial.println("Beat detected");
             long delta = millis() - lastBeat;
             lastBeat = millis();
 
@@ -71,15 +88,15 @@ void HeartRateSpO2::updateSensor() {
                 }
                 avg /= 4;
                 heartRateLocal = avg;
-                Serial.printf("HR: %d\n", heartRateLocal); // Debug
+                Serial.printf("HR: %d\n", heartRateLocal);
             }
         }
 
-        // Tính SpO2 khi có ngón tay
         if (irValue > 5000) {
             float spo2 = calculateSpO2(redValue, irValue);
             if (spo2 >= 90 && spo2 <= 100) {
                 spo2Local = spo2;
+                Serial.printf("SpO2: %.1f%%\n", spo2Local);
             }
         } else {
             heartRateLocal = 0;

@@ -1,3 +1,4 @@
+// include/Config.h
 #ifndef CONFIG_H
 #define CONFIG_H
 
@@ -7,7 +8,7 @@
 // BLE UUIDs
 #define SERVICE_UUID        "12345678-1234-1234-1234-123456789012"
 #define CHARACTERISTIC_UUID "12345678-1234-1234-1234-123456789013"
-#define WIFI_CONFIG_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a9" // Thêm dòng này
+#define WIFI_CONFIG_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 
 // StepCounter constants
 #define STEP_LENGTH 0.75    // Chiều dài bước chân trung bình (mét)
@@ -35,7 +36,7 @@
 #define DAYLIGHT_OFFSET_SEC 0
 
 // Power management
-#define SENSOR_SHUTDOWN_DELAY 5000 // Thời gian chờ trước khi tắt cảm biến (ms, nếu cần)
+#define SENSOR_SHUTDOWN_DELAY 5000 // Thời gian chờ trước khi tắt cảm biến (ms)
 
 // Task priorities
 #define TASK_PRIORITY_HEART_RATE 2  // Ưu tiên cao cho HeartRateSpO2
@@ -43,9 +44,9 @@
 #define TASK_PRIORITY_TIME 1        // Ưu tiên trung bình cho TimeManager
 
 // Thêm vào Config.h
-#define SAVE_STEP_INTERVAL 50 // Lưu vào EEPROM mỗi 50 bước (có thể điều chỉnh)
-#define STEP_DETECT_MAX_GYRO 100.0 // Ngưỡng con quay tối đa để tính là bước đi (tránh rung lắc)
-#define STEP_RESET_THRESHOLD (THRESHOLD * 0.8f) // Ngưỡng gia tốc để reset cờ phát hiện bước
-#define I2C_MUTEX_TIMEOUT_MS 50 // Thời gian chờ tối đa (ms) để lấy I2C mutex
+#define SAVE_STEP_INTERVAL 50 // Lưu vào EEPROM mỗi 50 bước
+#define STEP_DETECT_MAX_GYRO 100.0 // Ngưỡng con quay tối đa
+#define STEP_RESET_THRESHOLD (THRESHOLD * 0.8f) // Ngưỡng reset bước
+#define I2C_MUTEX_TIMEOUT_MS 100 // Tăng timeout lên 100ms
 
 #endif

@@ -1,3 +1,4 @@
+// include/StepCounter.h
 #ifndef STEP_COUNTER_H
 #define STEP_COUNTER_H
 

@@ -1,3 +1,4 @@
+// src/main.cpp
 #include <Arduino.h>
 #include <Wire.h>
 #include <EEPROM.h>
@@ -9,6 +10,8 @@
 #include "TimeManager.h"
 
 #define STEP_COUNT_ADDR 0
+
+SemaphoreHandle_t i2cMutex;
 
 DisplayManager display;
 StepCounter stepCounter;
@@ -37,7 +40,7 @@ volatile int pressCount = 0;
 
 void IRAM_ATTR buttonISR() {
     unsigned long currentTime = millis();
-    if (currentTime - lastPressTime > 50) { // Debounce 50ms
+    if (currentTime - lastPressTime > 50) {
         pressCount++;
         lastPressTime = currentTime;
         xSemaphoreGiveFromISR(buttonSemaphore, NULL);
@@ -84,10 +87,18 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(BUTTON_DISPLAY), buttonISR, FALLING);
 
     Serial.begin(115200);
+    while (!Serial) delay(10);
     Wire.begin();
     EEPROM.begin(512);
-    Wire.setClock(400000); // Set I2C clock speed to 400kHz
-    delay(1000); // Delay to allow serial monitor to connect
+    Wire.setClock(50000); // Giảm tốc độ I2C xuống 50kHz
+
+    i2cMutex = xSemaphoreCreateMutex();
+    if (i2cMutex == NULL) {
+        Serial.println("Failed to create I2C mutex!");
+        while (1);
+    }
+
+    delay(1000);
 
     Serial.println("Scanning I2C bus...");
     for (byte addr = 1; addr < 127; addr++) {
@@ -121,8 +132,8 @@ void loop() {
     heartRateSpO2.getData(heartRate, spo2, irValue, redValue);
     timeManager.getTime(currentTime, timeInitialized);
     
-    char timeStr[40]; // Tăng kích thước buffer lên (ví dụ: 40)
-    memset(timeStr, 0, sizeof(timeStr)); // Khởi tạo buffer bằng 0 cho an toàn
+    char timeStr[40];
+    memset(timeStr, 0, sizeof(timeStr));
     if (timeInitialized) {
         strftime(timeStr, sizeof(timeStr), "%Y-%m-%dT%H:%M:%S+07:00", &currentTime);
     } else {
