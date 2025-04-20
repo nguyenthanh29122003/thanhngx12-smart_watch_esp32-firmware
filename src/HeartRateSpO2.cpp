@@ -10,7 +10,7 @@ HeartRateSpO2::HeartRateSpO2()
 }
 
 void HeartRateSpO2::begin() {
-    if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+    if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
         Serial.println("MAX30105 not found! Check wiring or I2C address.");
         while (1);
     } else {

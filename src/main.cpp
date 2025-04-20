@@ -86,6 +86,8 @@ void setup() {
     Serial.begin(115200);
     Wire.begin();
     EEPROM.begin(512);
+    Wire.setClock(400000); // Set I2C clock speed to 400kHz
+    delay(1000); // Delay to allow serial monitor to connect
 
     Serial.println("Scanning I2C bus...");
     for (byte addr = 1; addr < 127; addr++) {
@@ -96,8 +98,8 @@ void setup() {
     }
 
     display.begin();
-    heartRateSpO2.begin();
     stepCounter.begin();
+    heartRateSpO2.begin();
     ble.begin();
     timeManager.begin();
 
