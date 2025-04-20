@@ -12,15 +12,15 @@
 
 // StepCounter constants
 #define STEP_LENGTH 0.75    // Chiều dài bước chân trung bình (mét)
-#define THRESHOLD 1.2       // Ngưỡng phát hiện bước chân (g)
+#define THRESHOLD 1.0       // Giảm ngưỡng phát hiện bước chân (g)
 #define STEP_DELAY 300      // Thời gian trễ giữa các bước (ms)
 #define ACC_THRESHOLD 0.5   // Ngưỡng gia tốc tối thiểu để bật cảm biến (g)
-#define GYRO_THRESHOLD 20   // Ngưỡng con quay tối thiểu để bật cảm biến (°/s)
+#define GYRO_THRESHOLD 10   // Giảm ngưỡng con quay tối thiểu (°/s)
 #define ACC_FILTER_ALPHA 0.9 // Hằng số bộ lọc Low-pass cho gia tốc
 #define GYRO_FILTER_ALPHA 0.9 // Hằng số bộ lọc Low-pass cho con quay
 
 // HeartRateSpO2 constants
-#define IR_THRESHOLD 50000  // Ngưỡng IR để phát hiện ngón tay
+#define IR_THRESHOLD 500    // Giảm ngưỡng IR để kiểm tra
 #define MOTION_THRESHOLD 10000 // Ngưỡng phát hiện chuyển động dựa trên delta IR
 #define BPM_MIN 20          // Nhịp tim tối thiểu (BPM)
 #define BPM_MAX 255         // Nhịp tim tối đa (BPM)
@@ -43,10 +43,9 @@
 #define TASK_PRIORITY_STEP 1        // Ưu tiên trung bình cho StepCounter
 #define TASK_PRIORITY_TIME 1        // Ưu tiên trung bình cho TimeManager
 
-// Thêm vào Config.h
 #define SAVE_STEP_INTERVAL 50 // Lưu vào EEPROM mỗi 50 bước
 #define STEP_DETECT_MAX_GYRO 100.0 // Ngưỡng con quay tối đa
 #define STEP_RESET_THRESHOLD (THRESHOLD * 0.8f) // Ngưỡng reset bước
-#define I2C_MUTEX_TIMEOUT_MS 100 // Tăng timeout lên 100ms
+#define I2C_MUTEX_TIMEOUT_MS 100 // Timeout I2C
 
 #endif

@@ -86,19 +86,20 @@ void setup() {
     buttonSemaphore = xSemaphoreCreateBinary();
     attachInterrupt(digitalPinToInterrupt(BUTTON_DISPLAY), buttonISR, FALLING);
 
-    Serial.begin(115200);
+    Serial.begin(921600); // Tăng baud rate
     while (!Serial) delay(10);
+    delay(1000); // Đợi Serial Monitor sẵn sàng
+    Serial.println("System starting...");
+
     Wire.begin();
     EEPROM.begin(512);
-    Wire.setClock(50000); // Giảm tốc độ I2C xuống 50kHz
+    Wire.setClock(50000); // I2C 50kHz
 
     i2cMutex = xSemaphoreCreateMutex();
     if (i2cMutex == NULL) {
         Serial.println("Failed to create I2C mutex!");
         while (1);
     }
-
-    delay(1000);
 
     Serial.println("Scanning I2C bus...");
     for (byte addr = 1; addr < 127; addr++) {

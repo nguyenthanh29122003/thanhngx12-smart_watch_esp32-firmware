@@ -9,7 +9,7 @@ extern SemaphoreHandle_t i2cMutex;
 #define STEP_COUNT_ADDR 0
 
 StepCounter::StepCounter() 
-    : mpu(), taskHandle(NULL), stepDetected(false), sensorActive(true), lastStepTime(0),
+    : mpu(), taskHandle(NULL), stepDetected(false), lastStepTime(0),
       stepCountLocal(0), distanceLocal(0), axLocal(0), ayLocal(0), azLocal(0),
       accFiltered(0), gyroFiltered(0), gxLocal(0), gyLocal(0), gzLocal(0) {
     dataMutex = xSemaphoreCreateMutex();
@@ -30,8 +30,6 @@ void StepCounter::begin() {
             Serial.println("MPU6050 initialized");
             mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
             mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
-            // Không sử dụng chế độ ngủ
-            sensorActive = true;
         }
         xSemaphoreGive(i2cMutex);
     } else {
@@ -94,19 +92,25 @@ void StepCounter::updateSensor() {
 
     int16_t ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw;
     bool readSuccess = false;
-    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        Serial.println("Reading MPU6050 data...");
-        mpu.getAcceleration(&ax_raw, &ay_raw, &az_raw);
-        mpu.getRotation(&gx_raw, &gy_raw, &gz_raw);
-        xSemaphoreGive(i2cMutex);
-        readSuccess = true;
-    } else {
-        Serial.println("I2C mutex timeout in StepCounter (read data)");
-        return;
+    for (int attempts = 0; attempts < 3 && !readSuccess; attempts++) {
+        if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+            Serial.println("Reading MPU6050 data...");
+            mpu.getAcceleration(&ax_raw, &ay_raw, &az_raw);
+            mpu.getRotation(&gx_raw, &gy_raw, &gz_raw);
+            xSemaphoreGive(i2cMutex);
+            if (!(ax_raw == 0 && ay_raw == 0 && az_raw == 0 && gx_raw == 0 && gy_raw == 0 && gz_raw == 0)) {
+                readSuccess = true;
+            } else {
+                Serial.println("MPU6050 returned all zeros, retrying...");
+            }
+        } else {
+            Serial.println("I2C mutex timeout in StepCounter (read data)");
+            return;
+        }
     }
 
-    if (!readSuccess || (ax_raw == 0 && ay_raw == 0 && az_raw == 0 && gx_raw == 0 && gy_raw == 0 && gz_raw == 0)) {
-        Serial.println("MPU6050 returned all zeros, possible I2C error");
+    if (!readSuccess) {
+        Serial.println("MPU6050 read failed after retries");
         return;
     }
 
@@ -127,10 +131,17 @@ void StepCounter::updateSensor() {
     float accMagnitude = sqrt(ax * ax + ay * ay + az * az);
     float gyroMagnitude = sqrt(gx * gx + gy * gy + gz * gz);
 
-    accFiltered = lowPassFilter(accMagnitude, accFiltered, 0.9);
-    gyroFiltered = lowPassFilter(gyroMagnitude, gyroFiltered, 0.9);
+    // Debug ngưỡng
+    static unsigned long lastMagnitudeDebug = 0;
+    if (millis() - lastMagnitudeDebug > 1000) {
+        Serial.printf("accMagnitude: %.2f, gyroMagnitude: %.2f\n", accMagnitude, gyroMagnitude);
+        lastMagnitudeDebug = millis();
+    }
 
-    if (accFiltered > 0.5 || gyroFiltered > 20) {
+    if (accMagnitude > ACC_THRESHOLD || gyroMagnitude > GYRO_THRESHOLD) {
+        accFiltered = lowPassFilter(accMagnitude, accFiltered, 0.9);
+        gyroFiltered = lowPassFilter(gyroMagnitude, gyroFiltered, 0.9);
+
         if (detectStep(accFiltered, gyroFiltered)) {
             if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
                 stepCountLocal++;
@@ -169,8 +180,8 @@ float StepCounter::lowPassFilter(float input, float previous, float alpha) {
 }
 
 bool StepCounter::detectStep(float accMagnitude, float gyroMagnitude) {
-    if (!stepDetected && accMagnitude > THRESHOLD && gyroMagnitude < 100) {
-        if (millis() - lastStepTime > 200) {
+    if (!stepDetected && accMagnitude > THRESHOLD && gyroMagnitude < STEP_DETECT_MAX_GYRO) {
+        if (millis() - lastStepTime > STEP_DELAY) {
             return true;
         }
     }
