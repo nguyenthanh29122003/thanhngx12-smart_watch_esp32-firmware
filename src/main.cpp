@@ -36,76 +36,106 @@ TaskHandle_t buttonTaskHandle = NULL;
 SemaphoreHandle_t buttonSemaphore;
 volatile unsigned long lastPressTime = 0;
 volatile int pressCount = 0; // Biến đếm số lần nhấn từ ISR
-// ISR Nút bấm (Giữ nguyên logic cũ)
+
+// ISR Nút bấm
 void IRAM_ATTR buttonISR() {
-unsigned long currentMillis = millis(); // Đổi tên biến để tránh trùng
-if (currentMillis - lastPressTime > 50) { // Debounce 50ms
-pressCount++;
-lastPressTime = currentMillis;
-// Đánh thức ButtonTask
-BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
-if (xHigherPriorityTaskWoken) {
-portYIELD_FROM_ISR();
+    // Chỉ cần đánh thức task xử lý
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
+    if (xHigherPriorityTaskWoken) {
+        portYIELD_FROM_ISR();
+    }
 }
-}
-}
+
 void buttonTask(void* pvParameters) {
-unsigned long pressStartTime = 0;
-bool heldActionDone = false; // Cờ đánh dấu đã xử lý nhấn giữ (1s hoặc 2s)
-while (true) {
-    // Chờ tín hiệu nhấn nút từ ISR
-    if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {
-        pressStartTime = millis(); // Ghi lại thời điểm bắt đầu nhấn
-        heldActionDone = false;    // Reset cờ xử lý nhấn giữ
-        Serial.println("Button Pressed Down");
+    unsigned long pressStartTime = 0;
+    unsigned long releaseTime = 0;
+    unsigned long lastReleaseTime = 0; // Lưu thời điểm nhả nút của lần nhấn TRƯỚC ĐÓ
+    const int debounceTime = 50;      // Thời gian debounce (ms)
+    const int doublePressMaxInterval = 400; // Khoảng thời gian tối đa giữa 2 lần NHẤN để tính là double press
+    const int shortPressMaxDuration = 800; // Thời gian nhấn tối đa cho single/double press
+    const int screenToggleHoldDuration = 1000; // Thời gian giữ để bật/tắt màn hình
+    const int rebootHoldDuration = 2000;    // Thời gian giữ để reboot
 
-        // Vòng lặp kiểm tra khi nút còn được giữ
-        while (digitalRead(BUTTON_DISPLAY) == LOW) {
-            unsigned long heldDuration  = millis() - pressStartTime; // Thời gian đã giữ
-
-            // Ưu tiên kiểm tra nhấn giữ lâu (> 2 giây) để reset
-            if (!heldActionDone && heldDuration  >= 2000) {
-                Serial.println("Button Held (>2s) - Resetting system...");
-                heldActionDone = true; // Đánh dấu đã xử lý
-                ESP.restart();
-                // Không cần break vì restart sẽ không quay lại
-            }
-            // Kiểm tra nhấn giữ vừa (1 giây) để bật/tắt màn hình
-            else if (!heldActionDone && heldDuration  >= 1000) {
-                Serial.println("Button Held (>=1s) - Toggling Screen");
-                display.toggleScreen(); // Gọi hàm toggle của DisplayManager
-                heldActionDone = true; // Đánh dấu đã xử lý
-                // Tiếp tục giữ vòng lặp để kiểm tra xem có thành nhấn giữ 2s không
-                // Hoặc có thể break nếu muốn hành động ngay khi đủ 1s
-                // break;
+    while (true) {
+        // Chờ tín hiệu nhấn nút từ ISR
+        if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {
+            // --- Debounce khi nhấn xuống ---
+            vTaskDelay(pdMS_TO_TICKS(debounceTime));
+            // Kiểm tra lại xem nút có còn nhấn không (tránh nhiễu)
+            if (digitalRead(BUTTON_DISPLAY) == HIGH) {
+                Serial.println("Button Bounce Ignored (Down)");
+                continue; // Bỏ qua nếu là nhiễu
             }
 
-            vTaskDelay(50 / portTICK_PERIOD_MS); // Kiểm tra lại sau 50ms
-        } // Kết thúc while giữ nút
+            pressStartTime = millis(); // Ghi thời điểm sau debounce
+            Serial.println("Button Pressed");
 
-        // Nút đã được thả ra
-        Serial.println("Button Released");
-
-        // Nếu chưa thực hiện hành động nhấn giữ nào (nghĩa là nhấn ngắn)
-        if (!heldActionDone) {
-            // Kiểm tra thời gian nhấn thực tế để tránh lỗi do debounce ISR
-            if (millis() - pressStartTime < 800) { // Coi là nhấn ngắn nếu dưới 800ms
-                 Serial.println("Short Press detected - Toggling Theme");
-                 display.toggleTheme(); // Gọi hàm đổi theme
-             } else {
-                 // Nếu thời gian > 800ms nhưng < 1000ms, có thể không làm gì
-                 Serial.println("Press duration between short and hold, ignoring.");
+            // --- Chờ nhả nút ---
+            while (digitalRead(BUTTON_DISPLAY) == LOW) {
+                vTaskDelay(pdMS_TO_TICKS(20)); // Chờ nút nhả ra
+            }
+            releaseTime = millis(); // Ghi thời điểm nhả nút
+             // --- Debounce khi nhả lên ---
+             vTaskDelay(pdMS_TO_TICKS(debounceTime));
+             // Kiểm tra lại xem nút có bị nhấn lại ngay không (tránh nhiễu)
+             if(digitalRead(BUTTON_DISPLAY) == LOW){
+                  Serial.println("Button Bounce Ignored (Up)");
+                  continue; // Bỏ qua nếu là nhiễu
              }
-        }
-        // Reset trạng thái sau khi xử lý xong
-        heldActionDone = false;
-        // Không cần reset pressCount nữa vì không dùng
-    } // Kết thúc if xSemaphoreTake
-} // Kết thúc while(true)
 
+            Serial.println("Button Released");
+
+            // --- Phân tích hành động ---
+            unsigned long pressDuration = releaseTime - pressStartTime;
+            unsigned long intervalSinceLastRelease = pressStartTime - lastReleaseTime; // Thời gian từ lần nhả trước đến lần nhấn này
+
+            Serial.printf("Press Duration: %lu ms, Interval: %lu ms\n", pressDuration, intervalSinceLastRelease);
+
+            // 1. Ưu tiên kiểm tra Reboot (Nhấn giữ lâu nhất)
+            if (pressDuration >= rebootHoldDuration) {
+                Serial.println("Action: Long Press (>2s) - Rebooting");
+                ESP.restart();
+            }
+            // 2. Kiểm tra Screen Toggle (Nhấn giữ vừa)
+            else if (pressDuration >= screenToggleHoldDuration) {
+                Serial.println("Action: Hold (>=1s) - Toggle Screen");
+                display.toggleScreen();
+            }
+            // 3. Kiểm tra Double Press
+            // Điều kiện: lần nhấn này xảy ra NHANH sau lần nhả trước ĐÓ (< doublePressMaxInterval)
+            // VÀ thời gian nhấn của lần này là NGẮN (< shortPressMaxDuration)
+            else if (intervalSinceLastRelease <= doublePressMaxInterval && pressDuration < shortPressMaxDuration) {
+                 Serial.println("Action: Double Press - Toggle Theme");
+                 display.toggleTheme();
+                 // Reset lastReleaseTime để tránh lần nhấn tiếp theo bị coi là double press
+                 lastReleaseTime = 0; // Quan trọng
+            }
+            // 4. Kiểm tra Single Press
+            // Điều kiện: KHÔNG phải double press (tức là interval lớn)
+            // VÀ thời gian nhấn là NGẮN (< shortPressMaxDuration)
+            else if (intervalSinceLastRelease > doublePressMaxInterval && pressDuration < shortPressMaxDuration) {
+                 Serial.println("Action: Single Press - Toggle Screen");
+                 // Yêu cầu mới: Nhấn 1 lần -> Toggle Screen
+                 display.toggleScreen();
+            }
+            // Các trường hợp khác (nhấn quá ngắn, hoặc nhấn giữ không đủ lâu) -> Bỏ qua
+            else {
+                 Serial.println("Action: Ignored (press too short or invalid timing)");
+            }
+
+            // Lưu lại thời điểm nhả nút cho lần xử lý tiếp theo
+            // Chỉ lưu nếu không phải là double press (vì double press đã reset nó)
+            if (lastReleaseTime != 0 || intervalSinceLastRelease > doublePressMaxInterval) {
+                 lastReleaseTime = releaseTime;
+            }
+
+        } // Kết thúc if xSemaphoreTake
+    } // Kết thúc while(true)
 }
+
 // ===== HÀM SETUP ĐÃ SỬA =====
+
 void setup() {
 pinMode(BUTTON_DISPLAY, INPUT_PULLUP);
 buttonSemaphore = xSemaphoreCreateBinary();
