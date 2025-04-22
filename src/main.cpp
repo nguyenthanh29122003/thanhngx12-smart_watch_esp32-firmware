@@ -129,49 +129,33 @@ void setup() {
 }
 
 void loop() {
-// 1. Lấy dữ liệu từ các module cảm biến và thời gian
-stepCounter.getData(stepCount, distance, ax, ay, az, gx, gy, gz);
-heartRateSpO2.getData(heartRate, spo2, irValue, redValue);
-timeManager.getTime(currentTime, timeInitialized);
-// 2. Lấy trạng thái kết nối WiFi
-bool wifiConnected = ble.isWifiConnected(); // Hoặc từ TimeManager nếu nó quản lý WiFi
+    stepCounter.getData(stepCount, distance, ax, ay, az, gx, gy, gz);
+    heartRateSpO2.getData(heartRate, spo2, irValue, redValue);
+    timeManager.getTime(currentTime, timeInitialized);
+    bool wifiConnected = ble.isWifiConnected();
 
-// 3. Cập nhật dữ liệu cho DisplayManager
-// Truyền tất cả dữ liệu cần thiết cho các chế độ hiển thị
-// display.updateData(wifiConnected, stepCount, distance, heartRate, spo2, &currentTime, timeInitialized);
-display.updateData(wifiConnected, &currentTime, timeInitialized);
-
-// 4. Chuẩn bị và gửi dữ liệu qua BLE
-char timeStr[40];
-memset(timeStr, 0, sizeof(timeStr));
-if (timeInitialized) {
-    strftime(timeStr, sizeof(timeStr), "%Y-%m-%dT%H:%M:%S+07:00", &currentTime);
-} else {
-    strcpy(timeStr, "Not initialized");
-}
-// Gửi tất cả dữ liệu thu thập được
-ble.updateData(ax, ay, az, stepCount, heartRate, spo2, irValue, redValue, wifiConnected, gx, gy, gz, timeStr);
-
-// 5. Logic reset bước chân hàng ngày (Giữ nguyên)
-if (timeInitialized) {
-    int currentDay = currentTime.tm_mday;
-    if (lastDay != -1 && currentDay != lastDay && currentTime.tm_hour == 0 && currentTime.tm_min <= 1) {
-         Serial.println("New day detected, attempting to reset step count...");
-         // Nên có cơ chế reset trong StepCounter thay vì ghi trực tiếp ở đây
-         // Tạm thời giữ lại:
-         EEPROM.writeInt(STEP_COUNT_ADDR, 0);
-         if (EEPROM.commit()) {
-              Serial.println("Step count reset to 0 in EEPROM.");
-              // Cập nhật biến local để hiển thị đúng ngay lập tức
-              stepCount = 0;
-              distance = 0;
-         } else {
-              Serial.println("Failed to commit EEPROM for step count reset!");
-         }
-         // TODO: Thông báo cho StepCounter để reset stepCountLocal của nó
+    char timeStr[40];
+    memset(timeStr, 0, sizeof(timeStr));
+    if (timeInitialized) {
+        strftime(timeStr, sizeof(timeStr), "%Y-%m-%dT%H:%M:%S+07:00", &currentTime);
+    } else {
+        strcpy(timeStr, "Not initialized");
     }
-    lastDay = currentDay;
-}
+    
+    ble.updateData(ax, ay, az, stepCount, heartRate, spo2, irValue, redValue, ble.isWifiConnected(), gx, gy, gz, timeStr);
+    display.updateData(wifiConnected, &currentTime, timeInitialized);
+
+    if (timeInitialized) {
+        int currentDay = currentTime.tm_mday;
+        if (lastDay != -1 && currentDay != lastDay && currentTime.tm_hour == 0 && currentTime.tm_min == 0) {
+            stepCount = 0;
+            distance = 0;
+            EEPROM.writeInt(STEP_COUNT_ADDR, 0);    
+            EEPROM.commit();
+            Serial.println("New day detected, step count reset to 0");
+        }
+        lastDay = currentDay;
+    }
 
     vTaskDelay(100 / portTICK_PERIOD_MS);
 }
