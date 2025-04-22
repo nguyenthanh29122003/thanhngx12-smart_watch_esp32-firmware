@@ -3,7 +3,8 @@
 #define CONFIG_H
 
 // Button
-#define BUTTON_DISPLAY 12
+#define MODE_BUTTON_PIN 12 // Chân 12 từ Config.h cho nút Mode/Theme
+#define POWER_BUTTON_PIN 14             // Chân GPIO 0 cho nút Nguồn/Reset/Màn hình (Sửa nếu cần)
 
 // BLE UUIDs
 #define SERVICE_UUID        "12345678-1234-1234-1234-123456789012"

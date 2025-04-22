@@ -1,78 +1,123 @@
 // include/DisplayManager.h
 #ifndef DISPLAY_MANAGER_H
 #define DISPLAY_MANAGER_H
+
 #include <TFT_eSPI.h>
-#include <time.h>     // Cần cho struct tm
+#include <time.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
-// Định nghĩa màu sắc (có thể chuyển vào Config.h)
+
+// --- Màu sắc và Hằng số UI ---
 #define DARK_BACKGROUND TFT_BLACK
 #define DARK_TEXT TFT_WHITE
-#define DARK_LINES 0x8410 // Màu xám tối cho đường kẻ/chấm
-#define DARK_BOX 0x5ACB // Màu hộp tối
-#define DARK_HIGHLIGHT TFT_ORANGE // Màu nhấn tối
+#define DARK_LINES 0x8410
+#define DARK_BOX 0x5ACB
+#define DARK_HIGHLIGHT TFT_ORANGE
+
 #define LIGHT_BACKGROUND TFT_WHITE
 #define LIGHT_TEXT TFT_BLACK
-#define LIGHT_LINES TFT_SILVER // Màu xám sáng
-#define LIGHT_BOX 0xDEFB // Màu hộp sáng (Gần giống xám)
-#define LIGHT_HIGHLIGHT TFT_NAVY // Màu nhấn sáng
-// Định nghĩa hằng số UI (có thể chuyển vào Config.h)
-#define RADIUS 104       // Bán kính vòng tròn chính
-#define CENTER_X 120     // Tọa độ tâm X
-#define CENTER_Y 120     // Tọa độ tâm Y
-#define NUM_POINTS 360   // Số điểm để tính toán (cho mỗi độ)
-// #define BACKLIGHT_PIN 5 // Không dùng PWM trong phiên bản này
-// #define PWM_LED_CHANNEL 0
-// Font Names (kiểm tra tên chính xác trong thư viện TFT_eSPI)
-#define DSEG7_CLASSIC_REGULAR_28 "DSEG7Classic-Regular28"
-#define DSEG7_MODERN_BOLD_20 "DSEG7Modern-Bold20"
-#define SECOND_HAND_LENGTH (RADIUS - 10)
+#define LIGHT_LINES TFT_SILVER
+#define LIGHT_BOX 0xDEFB
+#define LIGHT_HIGHLIGHT TFT_NAVY
+
+#define RADIUS 104
+#define CENTER_X 120
+#define CENTER_Y 120
+#define NUM_POINTS 360
+
+#define COLOR_TIME_DARK   tft.color565(170, 250, 255) // #aafaff
+#define COLOR_TIME_LIGHT  tft.color565(0, 180, 180)  // Màu Teal đậm hơn cho nền sáng
+#define COLOR_DATE        TFT_LIGHTGREY             // #ccc
+#define COLOR_SPO2        TFT_CYAN                  // #00e5ff
+#define COLOR_HR          TFT_PINK                  // #ff5ba0
+#define COLOR_STEPS       TFT_YELLOW                // #ffe15d
+
+// --- Định nghĩa các chế độ màn hình ---
+typedef enum {
+    SCREEN_MODE_WATCHFACE = 0,
+    SCREEN_MODE_SENSORS = 1,
+    SCREEN_MODE_COUNT // Luôn là phần tử cuối để đếm số lượng màn hình
+} ScreenMode;
+
+
 class DisplayManager {
 public:
-DisplayManager();
-void begin();
-void startTask();
-void stopTask();
-// Chỉ cần cập nhật thời gian và trạng thái WiFi (để vẽ icon nếu muốn)
-void updateData(bool wifiConnected, const struct tm* timeinfo, bool timeInitialized);
-void toggleScreen(); // Hàm mới, tự đảo trạng thái
-void toggleTheme();  // Hàm mới để đổi theme
-bool isScreenOn() const; // Hàm kiểm tra trạng thái màn hình
+    DisplayManager();
+    void begin();
+    void startTask();
+    void stopTask();
+
+    // --- Hàm cập nhật dữ liệu ---
+    // Nhận tất cả dữ liệu cần cho các màn hình
+    void updateData(bool wifiConnected,
+                    int stepCount, float distance, // Dữ liệu StepCounter
+                    int heartRate, int spo2,       // Dữ liệu HeartRateSpO2
+                    const struct tm* timeinfo, bool timeInitialized); // Dữ liệu thời gian
+
+    // --- Hàm điều khiển ---
+    void toggleScreen();     // Bật/tắt màn hình (tự đảo trạng thái)
+    void switchDisplayMode(); // Chuyển giữa các màn hình (WATCHFACE <-> SENSORS)
+    bool isScreenOn() const;  // Kiểm tra trạng thái màn hình
+    void toggleTheme();
+
 private:
-TFT_eSPI tft;
-TaskHandle_t taskHandle;
-SemaphoreHandle_t dataMutex; // Mutex bảo vệ dữ liệu nội bộ
-// Trạng thái nội bộ
-bool screenOn;
-int currentTheme; // 0: Dark, 1: Light
-bool timeInitializedLocal;
-struct tm timeinfoLocal;
-bool wifiConnectedLocal; // Lưu trạng thái WiFi
+    TFT_eSPI tft;
+    TaskHandle_t taskHandle;
+    SemaphoreHandle_t dataMutex; // Mutex bảo vệ các biến trạng thái và dữ liệu nội bộ
 
-// Biến trạng thái cho việc vẽ tối ưu
-String lastTimeString; // Lưu hh:mm:ss
-String lastDateString; // Lưu mm:dd
-String lastDayString;  // Lưu tên ngày
-int lastSecondAngle; // Lưu góc giây cuối cùng (-1 để vẽ lần đầu)
+    // --- Trạng thái Nội bộ ---
+    bool screenOn;                 // Màn hình đang bật hay tắt?
+    int currentTheme;              // 0: Dark, 1: Light (Giữ lại nếu muốn dùng)
+    ScreenMode currentScreenMode;  // Màn hình nào đang hiển thị?
+    bool timeInitializedLocal;     // Thời gian đã được đồng bộ chưa?
+    struct tm timeinfoLocal;       // Bản sao cục bộ của thời gian
+    bool wifiConnectedLocal;       // Trạng thái kết nối WiFi
+    // Dữ liệu cảm biến cục bộ
+    int stepCountLocal;
+    float distanceLocal;
+    int heartRateLocal;
+    int spo2Local;
 
-// Mảng lưu tọa độ điểm (tính toán một lần)
-float x[NUM_POINTS], y[NUM_POINTS];
-float px[NUM_POINTS], py[NUM_POINTS];
-float lx[NUM_POINTS], ly[NUM_POINTS];
-int startHour[12], startMinute[60];
+    // --- Biến Tối ưu Vẽ ---
+    // Cho Watch Face
+    String lastTimeString; // hh:mm:ss cuối cùng đã vẽ
+    String lastDateString; // mm:dd cuối cùng đã vẽ
+    String lastDayString;  // Tên ngày cuối cùng đã vẽ
+    int lastSecondAngle;   // Góc giây cuối cùng đã vẽ
+    // Cho Sensor Screen
+    int lastDisplayedSteps;
+    int lastDisplayedHR;
+    int lastDisplayedSpO2;
+    // Cho WiFi Icon
+    bool lastWifiState;
+    // Cờ yêu cầu vẽ lại toàn bộ màn hình
+    bool needsRedrawWatchFace;
+    bool needsRedrawSensorScreen;
 
-// Hàm private để vẽ
-static void taskFunction(void* pvParameters);
-void updateDisplay(); // Hàm chính trong task
-void drawStaticUI(); // Vẽ các thành phần tĩnh theo theme
-void updateDynamicElements(int angle, const String& currentDay, const String& currentTime, const String& currentDate);
-void updateDateDisplay(const String& currentDate);
-void refreshDynamicElements(); // Vẽ lại phần động ngay lập tức
-void drawWifiIcon(); // Hàm vẽ icon WiFi
-void drawClockFace(); // Vẽ nền tĩnh và các vạch/số cố định
-void updateTimeDisplay(int angle, const String& currentDay, const String& currentTime, const String& currentDate);
-void drawSecondHand(int angle, uint16_t color); // Hàm vẽ kim giây
 
+    // --- Dữ liệu Tính toán UI (Cho Watch Face) ---
+    float x[NUM_POINTS], y[NUM_POINTS];   // Tọa độ điểm trên vòng tròn
+    float px[NUM_POINTS], py[NUM_POINTS]; // Tọa độ điểm cho vạch phút/giờ
+    float lx[NUM_POINTS], ly[NUM_POINTS]; // Tọa độ điểm cuối vạch phút/giờ
+    int startHour[12];                    // Index bắt đầu cho các mốc 30 độ
+    int startMinute[60];                  // Index bắt đầu cho các mốc 6 độ (vạch phút)
+
+    // --- Hàm Private ---
+    static void taskFunction(void* pvParameters); // Hàm thực thi của Task
+    void updateDisplay(); // Hàm chính được gọi trong Task để quyết định vẽ gì
+
+    // --- Hàm Vẽ Chính cho Từng Màn Hình ---
+    void drawWatchFaceScreen(); // Vẽ toàn bộ màn hình mặt đồng hồ
+    void drawSensorDataScreen(); // Vẽ toàn bộ màn hình dữ liệu cảm biến
+
+    // --- Hàm Vẽ Phụ Trợ ---
+    void clearScreen();             // Xóa màn hình theo theme hiện tại
+    void drawWifiIcon();            // Vẽ icon WiFi
+    // Phụ trợ cho Watch Face
+    void drawClockFace();           // Vẽ phần tĩnh của mặt đồng hồ (vạch, số, chữ...)
+    void updateTimeDisplay(int angle, const String& currentDay, const String& currentTime); // Cập nhật phần động (giờ số, ngày chữ, vòng xoay)
+    void updateDateDisplay(const String& currentDate); // Cập nhật hộp ngày tháng
 };
-#endif
+
+#endif // DISPLAY_MANAGER_H

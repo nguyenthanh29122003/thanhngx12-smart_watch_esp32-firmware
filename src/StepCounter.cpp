@@ -94,7 +94,6 @@ void StepCounter::updateSensor() {
     bool readSuccess = false;
     for (int attempts = 0; attempts < 3 && !readSuccess; attempts++) {
         if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-            Serial.println("Reading MPU6050 data...");
             mpu.getAcceleration(&ax_raw, &ay_raw, &az_raw);
             mpu.getRotation(&gx_raw, &gy_raw, &gz_raw);
             xSemaphoreGive(i2cMutex);

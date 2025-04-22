@@ -1,3 +1,4 @@
+// src/BluetoothManager.cpp
 #include "BluetoothManager.h"
 #include "Config.h"
 #include <string.h>
@@ -39,7 +40,18 @@ void WifiConfigCallbacks::onWrite(NimBLECharacteristic* pCharacteristic) {
         timeinfo.tm_min = doc["time"]["minute"].as<int>();
         timeinfo.tm_sec = doc["time"]["second"].as<int>();
         // Bỏ qua timezone (giả định đã được xử lý ở client, +7)
-        manager->timeManager->setTimeFromBLE(timeinfo);
+        timeinfo.tm_isdst = -1;
+
+        time_t calculated_time = mktime(&timeinfo);
+
+        if (calculated_time != (time_t)-1) {
+            Serial.printf("Calculated wday: %d\n", timeinfo.tm_wday); // In ra để kiểm tra
+            // Giờ đây timeinfo đã có tm_wday đúng
+            manager->timeManager->setTimeFromBLE(timeinfo);
+        } else {
+            Serial.println("Error: mktime failed to calculate time from BLE data.");
+            // Không cập nhật thời gian nếu mktime lỗi
+        }
     }
     else {
         Serial.println("Unknown JSON format");

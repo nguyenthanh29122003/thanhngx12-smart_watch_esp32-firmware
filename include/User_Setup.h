@@ -1,3 +1,4 @@
+// include/User_Setup.h
 // Cấu hình cho màn hình GC9A01 và ESP32
 #define USER_SETUP_INFO "User_Setup for GC9A01"
 

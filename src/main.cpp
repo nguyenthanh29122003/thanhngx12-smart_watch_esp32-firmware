@@ -8,6 +8,7 @@
 #include "HeartRateSpO2.h"
 #include "BluetoothManager.h"
 #include "TimeManager.h"
+#include <OneButton.h>
 
 #define STEP_COUNT_ADDR 0
 
@@ -28,64 +29,59 @@ float gx = 0, gy = 0, gz = 0;
 long irValue = 0, redValue = 0;
 struct tm currentTime;
 bool timeInitialized = false;
-bool screenOn = true;
 unsigned long lastSendTime = 0;
 const unsigned long sendInterval = 1000;
 int lastDay = -1;
 
-TaskHandle_t buttonTaskHandle = NULL;
 SemaphoreHandle_t buttonSemaphore;
 volatile unsigned long lastPressTime = 0;
 volatile int pressCount = 0;
+OneButton buttonMode(MODE_BUTTON_PIN, true, true);  // Nút Mode/Theme (Chân 12)
+OneButton powerButton(POWER_BUTTON_PIN, true, true); // Nút Nguồn (Chân 14)
 
-void IRAM_ATTR buttonISR() {
-    unsigned long currentTime = millis();
-    if (currentTime - lastPressTime > 50) {
-        pressCount++;
-        lastPressTime = currentTime;
-        xSemaphoreGiveFromISR(buttonSemaphore, NULL);
-    }
+// Biến lưu trạng thái nhấn giữ để tránh reboot nhiều lần
+volatile bool isPowerLongPressHandled = false;
+
+// ===== CÁC HÀM CALLBACK CHO NÚT MODE/THEME (Chân 12) =====
+
+// Nhấn đơn nút Mode -> Switch Display Mode
+void handleModeClick() {
+    Serial.println("Mode Button Click() - Switching Display Mode");
+    display.switchDisplayMode();
 }
 
-void buttonTask(void* pvParameters) {
-    unsigned long pressStart = 0;
-    int localPressCount = 0;
+// Nhấn giữ nút Mode -> Toggle Theme
+void handleModeLongPressStart() {
+    Serial.println("Mode Button LongPressStart() - Toggling Theme");
+    display.toggleTheme();
+    // Có thể thêm phản hồi rung hoặc sáng đèn nhẹ khi bắt đầu giữ
+}
 
-    while (true) {
-        if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {
-            pressStart = lastPressTime;
-            localPressCount = pressCount;
+// ===== CÁC HÀM CALLBACK CHO NÚT POWER (Chân 14) =====
 
-            while (digitalRead(BUTTON_DISPLAY) == LOW) {
-                if (millis() - pressStart > 2000) {
-                    Serial.println("Long press - Resetting system...");
-                    ESP.restart();
-                    break;
-                }
-                vTaskDelay(10 / portTICK_PERIOD_MS);
-            }
+// Nhấn đơn nút Power -> Toggle Screen
+void handlePowerClick() {
+    Serial.println("Power Button Click() - Toggling Screen");
+    display.toggleScreen();
+}
 
-            vTaskDelay(500 / portTICK_PERIOD_MS);
-            if (pressCount == localPressCount) {
-                if (localPressCount == 1) {
-                    screenOn = !screenOn;
-                    display.toggleScreen();
-                    Serial.println("Single press - Screen toggled");
-                } else if (localPressCount == 2) {
-                    display.toggleTheme();
-                    Serial.println("Double press - Switched display mode");
-                }
-                pressCount = 0;
-            }
-        }
+// Bắt đầu nhấn giữ nút Power
+void handlePowerLongPressStart() {
+    Serial.println("Power Button LongPressStart()");
+    isPowerLongPressHandled = false; // Reset cờ xử lý reboot
+}
+
+// Khi đang nhấn giữ nút Power
+void handlePowerDuringLongPress() {
+    // Chỉ reboot MỘT LẦN khi giữ đủ 2 giây
+    if (!isPowerLongPressHandled && powerButton.getPressedMs() >= 3000) {
+        Serial.println("Power Button DuringLongPress() >= 3s - Rebooting...");
+        isPowerLongPressHandled = true; // Đánh dấu đã xử lý
+        ESP.restart();
     }
 }
 
 void setup() {
-    pinMode(BUTTON_DISPLAY, INPUT_PULLUP);
-    buttonSemaphore = xSemaphoreCreateBinary();
-    attachInterrupt(digitalPinToInterrupt(BUTTON_DISPLAY), buttonISR, FALLING);
-
     Serial.begin(921600); // Tăng baud rate
     while (!Serial) delay(10);
     delay(1000); // Đợi Serial Monitor sẵn sàng
@@ -121,7 +117,17 @@ void setup() {
     timeManager.startTask();
     display.startTask();
 
-    xTaskCreate(buttonTask, "ButtonTask", 2048, NULL, 3, &buttonTaskHandle);
+    // --- GẮN CALLBACK CHO NÚT MODE (Chân 12) ---
+    Serial.println("Attaching Mode Button callbacks...");
+    buttonMode.attachClick(handleModeClick);             // Nhấn đơn -> Switch Mode
+    buttonMode.attachLongPressStart(handleModeLongPressStart); // Nhấn giữ -> Toggle Theme
+    buttonMode.setPressMs(1000); // Thời gian giữ để kích hoạt LongPressStart (1 giây)
+
+    // --- GẮN CALLBACK CHO NÚT POWER (Chân 14) ---
+    Serial.println("Attaching Power Button callbacks...");
+    powerButton.attachClick(handlePowerClick);             // Nhấn đơn -> Toggle Screen
+    powerButton.attachLongPressStart(handlePowerLongPressStart); // Bắt đầu giữ
+    powerButton.attachDuringLongPress(handlePowerDuringLongPress); // Đang giữ (để reboot)
 
     stepCount = EEPROM.readInt(STEP_COUNT_ADDR);
     Serial.printf("Restored step count: %d\n", stepCount);
@@ -133,6 +139,9 @@ void loop() {
     heartRateSpO2.getData(heartRate, spo2, irValue, redValue);
     timeManager.getTime(currentTime, timeInitialized);
     bool wifiConnected = ble.isWifiConnected();
+    
+    buttonMode.tick();
+    powerButton.tick();
 
     char timeStr[40];
     memset(timeStr, 0, sizeof(timeStr));
@@ -143,7 +152,7 @@ void loop() {
     }
     
     ble.updateData(ax, ay, az, stepCount, heartRate, spo2, irValue, redValue, ble.isWifiConnected(), gx, gy, gz, timeStr);
-    display.updateData(wifiConnected, &currentTime, timeInitialized);
+    display.updateData(wifiConnected, stepCount, distance, heartRate, spo2, &currentTime, timeInitialized);
 
     if (timeInitialized) {
         int currentDay = currentTime.tm_mday;
