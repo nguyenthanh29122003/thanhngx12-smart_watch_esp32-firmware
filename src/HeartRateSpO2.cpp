@@ -15,7 +15,7 @@ HeartRateSpO2::HeartRateSpO2()
 void HeartRateSpO2::begin() {
     if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
         Serial.println("MAX30105 not found! Check wiring or I2C address.");
-        while (1);
+        return;
     } else {
         particleSensor.setup();
         particleSensor.setPulseAmplitudeRed(0x0A);
@@ -63,7 +63,6 @@ void HeartRateSpO2::updateSensor() {
     // Debug dữ liệu cảm biến
     static unsigned long lastDebugTime = 0;
     if (millis() - lastDebugTime > 1000) { // In mỗi giây
-        Serial.printf("MAX30102 - IR: %ld, Red: %ld\n", irValue, redValue);
         lastDebugTime = millis();
     }
 

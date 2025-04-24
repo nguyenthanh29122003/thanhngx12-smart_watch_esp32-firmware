@@ -122,8 +122,6 @@ void StepCounter::updateSensor() {
 
     static unsigned long lastDebugTime = 0;
     if (millis() - lastDebugTime > 1000) {
-        Serial.printf("MPU6050 - ax: %.2f, ay: %.2f, az: %.2f, gx: %.2f, gy: %.2f, gz: %.2f\n",
-                      ax, ay, az, gx, gy, gz);
         lastDebugTime = millis();
     }
 
@@ -133,7 +131,6 @@ void StepCounter::updateSensor() {
     // Debug ngưỡng
     static unsigned long lastMagnitudeDebug = 0;
     if (millis() - lastMagnitudeDebug > 1000) {
-        Serial.printf("accMagnitude: %.2f, gyroMagnitude: %.2f\n", accMagnitude, gyroMagnitude);
         lastMagnitudeDebug = millis();
     }
 

@@ -170,7 +170,6 @@ void BluetoothManager::sendData() {
 
         if (pDataCharacteristic != nullptr && pServer->getConnectedCount() > 0) {
             try {
-                Serial.println("Sending JSON (len " + String(jsonStr.length()) + "): " + jsonStr);
                 pDataCharacteristic->setValue(jsonStr);
                 pDataCharacteristic->notify();
             } catch (const std::exception& e) {

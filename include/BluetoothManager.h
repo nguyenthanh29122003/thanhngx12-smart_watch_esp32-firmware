@@ -37,6 +37,7 @@ private:
     NimBLEServer* pServer;
     NimBLECharacteristic* pDataCharacteristic;
     NimBLECharacteristic* pWifiConfigCharacteristic;
+    NimBLECharacteristic* pStatusCharacteristic;
     TaskHandle_t taskHandle;
     SemaphoreHandle_t dataMutex;
     float axLocal, ayLocal, azLocal;
@@ -53,6 +54,7 @@ private:
     static void taskFunction(void* pvParameters);
     void setupBLE();
     void connectWiFi();
+    void setStatus(const String &status);
     friend class WifiConfigCallbacks;
 };
 
