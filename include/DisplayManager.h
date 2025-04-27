@@ -40,7 +40,6 @@ typedef enum {
     SCREEN_MODE_COUNT // Luôn là phần tử cuối để đếm số lượng màn hình
 } ScreenMode;
 
-
 class DisplayManager {
 public:
     DisplayManager();
@@ -94,7 +93,6 @@ private:
     // Cờ yêu cầu vẽ lại toàn bộ màn hình
     bool needsRedrawWatchFace;
     bool needsRedrawSensorScreen;
-
 
     // --- Dữ liệu Tính toán UI (Cho Watch Face) ---
     float x[NUM_POINTS], y[NUM_POINTS];   // Tọa độ điểm trên vòng tròn
