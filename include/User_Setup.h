@@ -1,35 +1,59 @@
 // include/User_Setup.h
-// Cấu hình cho màn hình GC9A01 và ESP32
-#define USER_SETUP_INFO "User_Setup for GC9A01"
 
-// Chọn driver màn hình
-#define GC9A01_DRIVER
+// Đặt tên cho cấu hình này (tùy chọn)
+#define USER_SETUP_INFO "ESP32-S3_TFT_135x240_ST7789" // <<< ĐỔI TÊN
 
-// Định nghĩa các chân SPI
-#define TFT_MISO  -1  // Không sử dụng MISO cho GC9A01 (chỉ cần MOSI và SCK)
-#define TFT_MOSI  23  // SDA (SPI MOSI)
-#define TFT_SCLK  18  // SCL (SPI SCK)
-#define TFT_CS    5   // Chip Select
-#define TFT_DC    2   // Data/Command (Thay đổi từ GPIO 4 thành GPIO 2 theo yêu cầu)
-#define TFT_RST   4   // Reset
+// --- Chọn Driver ---
+#define ST7789_DRIVER      // <<< KÍCH HOẠT DRIVER NÀY
 
-// Tần số SPI (tối đa cho GC9A01 thường là 40MHz)
-#define SPI_FREQUENCY  40000000
+// --- Kích thước màn hình ---
+#define TFT_WIDTH  135     // <<< SỬA KÍCH THƯỚC
+#define TFT_HEIGHT 240     // <<< SỬA KÍCH THƯỚC
 
-// Cấu hình thêm
-#define TFT_WIDTH   240  // Độ phân giải ngang
-#define TFT_HEIGHT  240  // Độ phân giải dọc
+// --- Offset cho màn hình không vuông (Quan trọng cho ST7789 135x240) ---
+// Thử nghiệm các giá trị offset này. Chúng khác nhau tùy loại màn hình.
+// Offset có thể là 40, 52, 53...
+#define TFT_OFFSET_X 52    // <<< THÊM/SỬA OFFSET X (Thử 52 hoặc 53 trước)
+#define TFT_OFFSET_Y 40    // <<< THÊM/SỬA OFFSET Y (Thử 40 trước)
+// Nếu không có offset, hình ảnh có thể bị lệch
 
-// Màu sắc mặc định (có thể thay đổi trong code)
-#define TFT_RGB_ORDER TFT_RGB  // Thứ tự màu RGB
-#define TFT_INVERSION_OFF      // Không đảo màu
+// --- Định nghĩa Chân Kết nối SPI và Điều khiển (Theo tài liệu) ---
+#define TFT_MISO  37     // <<< SỬA CHÂN (Hoặc -1 nếu chắc chắn không dùng)
+#define TFT_MOSI  35     // <<< SỬA CHÂN
+#define TFT_SCLK  36     // <<< SỬA CHÂN
+#define TFT_CS    7      // <<< SỬA CHÂN
+#define TFT_DC   39      // <<< SỬA CHÂN
+#define TFT_RST  40      // <<< SỬA CHÂN
 
-// Tắt các tính năng không cần thiết để tiết kiệm bộ nhớ
-#define DISABLE_ALL_LIBRARY_WARNINGS
+// --- Định nghĩa Chân Đèn nền (Backlight) ---
+#define TFT_BL   45      // <<< THÊM/SỬA CHÂN BL
+// #define TFT_BACKLIGHT_ON HIGH // <<< Bỏ comment dòng này nếu HIGH là bật đèn nền (thường là vậy)
+// #define TFT_BACKLIGHT_ON LOW  // <<< Hoặc dùng dòng này nếu LOW là bật
+
+// --- Tần số SPI ---
+#define SPI_FREQUENCY  40000000 // Giữ 40MHz hoặc thử 27MHz nếu không ổn định
+// #define SPI_FREQUENCY  27000000
+
+// --- Cấu hình Màu sắc và Đảo ngược (Giữ nguyên ban đầu, sửa nếu cần) ---
+#define TFT_RGB_ORDER TFT_RGB  // Thử TFT_BGR nếu màu đỏ/xanh bị tráo
+// #define TFT_INVERSION_ON    // Thử nếu màu bị đảo (đen thành trắng)
+#define TFT_INVERSION_OFF
+
+// --- Load Font (Giữ nguyên như cũ là tốt) ---
 #define LOAD_GLCD   // Font 1
 #define LOAD_FONT2  // Font 2
 #define LOAD_FONT4  // Font 4
-#define LOAD_GFXFF  // FreeFonts
+// #define LOAD_FONT6 // Có thể bỏ nếu không dùng
+// #define LOAD_FONT7 // Có thể bỏ nếu không dùng
+// #define LOAD_FONT8 // Có thể bỏ nếu không dùng
+#define LOAD_GFXFF  // <<< RẤT QUAN TRỌNG cho DSEG7 và các font khác
+#define SMOOTH_FONT // <<< RẤT QUAN TRỌNG cho font đẹp
 
-// Không sử dụng touch screen
+// --- Touch Screen (Vẫn không dùng) ---
 #define TOUCH_CS -1
+
+// --- SPI Read Frequency (Giữ nguyên hoặc đặt theo SPI_FREQUENCY) ---
+#define SPI_READ_FREQUENCY  20000000
+
+// --- Touch SPI Frequency (Giữ nguyên) ---
+#define SPI_TOUCH_FREQUENCY  2500000

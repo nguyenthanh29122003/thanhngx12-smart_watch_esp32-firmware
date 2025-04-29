@@ -3,43 +3,57 @@
 #define BLUETOOTH_MANAGER_H
 
 #include <NimBLEDevice.h>
-#include <ArduinoJson.h>
+// Bỏ #include <ArduinoJson.h> nếu không dùng
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 #include "Config.h"
-#include "TimeManager.h" // Thêm include
+#include "TimeManager.h"
 
-class BluetoothManager;
+class BluetoothManager; // Forward declaration
 
+// --- WifiConfigCallbacks (Giữ nguyên) ---
 class WifiConfigCallbacks : public NimBLECharacteristicCallbacks {
 public:
     WifiConfigCallbacks(BluetoothManager* manager) : manager(manager) {}
     void onWrite(NimBLECharacteristic* pCharacteristic) override;
-
 private:
     BluetoothManager* manager;
 };
 
+// --- Server Callbacks (Giữ nguyên) ---
+class MyServerCallbacks : public NimBLEServerCallbacks {
+    void onConnect(NimBLEServer* pServer) override;
+    void onDisconnect(NimBLEServer* pServer) override;
+};
+
+
 class BluetoothManager {
 public:
-    BluetoothManager(TimeManager* timeManager); // Thêm con trỏ TimeManager
+    BluetoothManager(TimeManager* timeManager);
     void begin();
-    void startTask();
+    void startTask(UBaseType_t priority = 1);
     void stopTask();
-    void updateData(float ax, float ay, float az, int stepCount, int heartRate, int spo2, 
-                   long irValue, long redValue, bool wifiConnected, float gx, float gy, float gz, const char* timestamp);
-    void sendData();
-    bool isWifiConnected();
+    // ===== SỬA KHAI BÁO updateData =====
+    void updateData(float ax, float ay, float az, int stepCount, int heartRate, int spo2,
+                   long irValue, long redValue, bool wifiConnected, float gx, float gy, float gz,
+                   float temperature, float pressure, // <-- THÊM THAM SỐ MỚI
+                   const char* timestamp);
+    bool isWifiConnected(); // Giữ lại hàm này
+
+    // Hàm cập nhật trạng thái (cho Status Characteristic)
+    void setStatus(const String &status);
 
 private:
     NimBLEServer* pServer;
     NimBLECharacteristic* pDataCharacteristic;
     NimBLECharacteristic* pWifiConfigCharacteristic;
-    NimBLECharacteristic* pStatusCharacteristic;
+    NimBLECharacteristic* pStatusCharacteristic; // Khai báo Status Char
     TaskHandle_t taskHandle;
-    SemaphoreHandle_t dataMutex;
+    SemaphoreHandle_t dataMutex; // Mutex bảo vệ dữ liệu local
+
+    // --- Dữ liệu cục bộ ---
     float axLocal, ayLocal, azLocal;
     float gxLocal, gyLocal, gzLocal;
     int stepCountLocal;
@@ -48,14 +62,28 @@ private:
     long irValueLocal, redValueLocal;
     bool wifiConnectedLocal;
     String timestampLocal;
+    float temperatureLocal; // <-- THÊM
+    float pressureLocal;    // <-- THÊM
+    String statusLocal;     // <-- THÊM
+
+    // --- Cấu hình WiFi ---
     String wifiSSID;
     String wifiPassword;
-    TimeManager* timeManager; // Con trỏ đến TimeManager
+
+    // --- Con trỏ phụ thuộc ---
+    TimeManager* timeManager;
+
+    // --- Hàm private ---
     static void taskFunction(void* pvParameters);
-    void setupBLE();
-    void connectWiFi();
-    void setStatus(const String &status);
+    void setupBLE();                       // Thiết lập BLE
+    void sendData();                       // Gửi dữ liệu (BẮT BUỘC DÙNG STRING)
+    // void connectWiFi();                 // <-- HÀM CŨ, SẼ THAY BẰNG initWiFi + event handler
+    static void wifiEventHandler(WiFiEvent_t event, WiFiEventInfo_t info); // Static handler
+    void initWiFi(); // Hàm đăng ký event và bắt đầu kết nối non-blocking
+
+    // Friend class để callback truy cập được
     friend class WifiConfigCallbacks;
+    friend class MyServerCallbacks; // Cho phép callback server truy cập (nếu cần)
 };
 
-#endif
+#endif // BLUETOOTH_MANAGER_H
