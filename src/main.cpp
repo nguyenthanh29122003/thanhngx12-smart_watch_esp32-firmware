@@ -83,7 +83,6 @@ void handleLongPressStop() {
 // ===================== SETUP =====================
 void setup() {
     Serial.begin(921600);
-    while (!Serial) delay(10);
     delay(1000);
     Serial.println("\n\n--- ESP32-S3 Smartwatch Firmware Starting ---");
 

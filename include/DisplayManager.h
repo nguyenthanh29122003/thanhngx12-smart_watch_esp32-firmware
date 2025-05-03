@@ -2,49 +2,51 @@
 #ifndef DISPLAY_MANAGER_H
 #define DISPLAY_MANAGER_H
 
-#include <TFT_eSPI.h>
+// --- ADAFRUIT INCLUDES ---
+#include <Adafruit_GFX.h>     // Core graphics library
+#include <Adafruit_ST7789.h>  // Specific driver for ST7789
+#include <SPI.h>              // Required for SPI communication
+
+// --- FONT INCLUDES (CHỌN VÀ THÊM CÁC FONT BẠN MUỐN DÙNG) ---
+#include <Fonts/FreeSans9pt7b.h>       // Ví dụ font thay thế cho font 2
+#include <Fonts/FreeSansBold12pt7b.h> // Ví dụ font thay thế cho font 4
+#include <Fonts/FreeMonoBold9pt7b.h>  // Font đơn cách (monospace) nếu cần
+
+// --- Standard & RTOS Includes ---
 #include <time.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
-#include "Config.h" // Để lấy TASK_PRIORITY và các định nghĩa màu/UI nếu chuyển vào đây
+#include "Config.h"
 
-// --- Màu sắc và Hằng số UI ---
-// (Giữ nguyên các định nghĩa màu sắc DARK/LIGHT)
-#define DARK_BACKGROUND TFT_BLACK
-#define DARK_TEXT TFT_WHITE
-#define DARK_LINES 0x8410
-#define DARK_BOX 0x5ACB
-#define DARK_HIGHLIGHT TFT_ORANGE
-#define LIGHT_BACKGROUND TFT_WHITE
-#define LIGHT_TEXT TFT_BLACK
-#define LIGHT_LINES TFT_SILVER
-#define LIGHT_BOX 0xDEFB
-#define LIGHT_HIGHLIGHT TFT_NAVY
+// --- Màu sắc và Hằng số UI (ĐÃ CẬP NHẬT CHO ADAFRUIT + HEX VALUES) ---
+#define DARK_BACKGROUND   ST77XX_BLACK      // Standard Adafruit
+#define DARK_TEXT         ST77XX_WHITE      // Standard Adafruit
+#define DARK_LINES        0x8410            // Keep custom hex
+#define DARK_BOX          0x5ACB            // Keep custom hex
+#define DARK_HIGHLIGHT    ST77XX_ORANGE     // Standard Adafruit
+#define LIGHT_BACKGROUND  ST77XX_WHITE      // Standard Adafruit
+#define LIGHT_TEXT        ST77XX_BLACK      // Standard Adafruit
+#define LIGHT_LINES       0xC618            // HEX for SILVER (was ST77XX_SILVER)
+#define LIGHT_BOX         0xDEFB            // Keep custom hex
+#define LIGHT_HIGHLIGHT   0x000F            // HEX for NAVY (was ST77XX_NAVY)
 
-// Kích thước và Tâm (Xác định lại cho màn hình mới)
-// Lấy từ User_Setup.h thông qua TFT_WIDTH/TFT_HEIGHT (nếu User_Setup.h được include trước)
-// Hoặc định nghĩa lại ở đây để chắc chắn
-#define SCREEN_WIDTH  135 // Giả định User_Setup.h đã đúng
-#define SCREEN_HEIGHT 240
-#define CENTER_X (SCREEN_WIDTH / 2)
-#define CENTER_Y (SCREEN_HEIGHT / 2)
-#define WATCHFACE_RADIUS (SCREEN_WIDTH / 2 - 10) // Bán kính cho mặt đồng hồ
-
-#define NUM_POINTS 360   // Số điểm để tính toán (cho mỗi độ)
-
-// Màu sắc chỉ số
-#define COLOR_SPO2        TFT_CYAN
-#define COLOR_HR          TFT_PINK
-#define COLOR_STEPS       TFT_YELLOW
-#define COLOR_TEMP        TFT_GREEN
-#define COLOR_PRESSURE    TFT_BLUE
-#define COLOR_ACCEL       TFT_RED
-#define COLOR_GYRO        TFT_MAGENTA
-#define COLOR_DATE        TFT_LIGHTGREY // Màu cho ngày tháng (có thể dùng chung)
+// Màu sắc chỉ số (ĐÃ CẬP NHẬT CHO ADAFRUIT + HEX VALUES)
+#define COLOR_SPO2        ST77XX_CYAN       // Standard Adafruit
+#define COLOR_HR          0xFDDF            // HEX for PINK (was ST77XX_PINK)
+#define COLOR_STEPS       ST77XX_YELLOW     // Standard Adafruit
+#define COLOR_TEMP        ST77XX_GREEN      // Standard Adafruit
+#define COLOR_PRESSURE    ST77XX_BLUE       // Standard Adafruit
+#define COLOR_ACCEL       ST77XX_RED        // Standard Adafruit
+#define COLOR_GYRO        ST77XX_MAGENTA    // Standard Adafruit
+#define COLOR_DATE        0xD69A            // HEX for LIGHTGREY (was ST77XX_LIGHTGREY)
+#define COLOR_TIME_DARK   0xAFBF            // Keep custom hex
+#define COLOR_TIME_LIGHT  0x0594            // Keep custom hex
+#define COLOR_DARKGREY    0x7BEF            // HEX for DARKGREY (was TFT_DARKGREY)
+#define NUM_POINTS 360
 
 
-// --- Định nghĩa các chế độ màn hình ---
+// --- Định nghĩa các chế độ màn hình (Giữ nguyên) ---
 typedef enum {
     SCREEN_MODE_WATCHFACE = 0,
     SCREEN_MODE_SENSORS_PRIMARY,
@@ -53,44 +55,40 @@ typedef enum {
     SCREEN_MODE_COUNT
 } ScreenMode;
 
-
+// --- Phần còn lại của DisplayManager.h giữ nguyên ---
 class DisplayManager {
 public:
     DisplayManager();
-    bool begin(); // Trả về bool
-    void startTask(UBaseType_t priority = 1); // Nhận priority
+    bool begin();
+    void startTask(UBaseType_t priority = 1);
     void stopTask();
 
-    // --- Hàm cập nhật dữ liệu ---
     void updateData(bool wifiConnected,
                     int stepCount, float distance,
                     int heartRate, int spo2,
-                    float temperature, float pressure, // Thêm BMP280
-                    float ax, float ay, float az,      // Thêm IMU
+                    float temperature, float pressure,
+                    float ax, float ay, float az,
                     float gx, float gy, float gz,
                     const struct tm* timeinfo, bool timeInitialized);
 
-    // --- Hàm điều khiển ---
     void toggleScreen();
     void switchDisplayMode();
-    void toggleTheme(); // Đã thêm khai báo này
+    void toggleTheme();
     bool isScreenOn() const;
 
 private:
-    TFT_eSPI tft;
+    Adafruit_ST7789 tft;
     TaskHandle_t taskHandle;
     SemaphoreHandle_t dataMutex;
 
-    // --- Trạng thái Nội bộ ---
     bool screenOn;
     int currentTheme; // 0: Dark, 1: Light
     ScreenMode currentScreenMode;
     bool timeInitializedLocal;
     struct tm timeinfoLocal;
     bool wifiConnectedLocal;
-    // Dữ liệu cảm biến cục bộ
     int stepCountLocal;
-    float distanceLocal; // Giữ lại nếu cần hiển thị
+    float distanceLocal;
     int heartRateLocal;
     int spo2Local;
     float temperatureLocal;
@@ -98,56 +96,45 @@ private:
     float axLocal, ayLocal, azLocal;
     float gxLocal, gyLocal, gzLocal;
 
-    // --- Biến Tối ưu Vẽ ---
-    String lastTimeString; // Dùng chung cho các màn hình (HH:MM)
-    // Watch Face
-    String lastDateStringWF; // Lưu chuỗi ngày đầy đủ (DAY DD MMM) cho WF
-    String lastDayStringWF;  // Lưu tên ngày đầy đủ cho WF
-    int lastSecondAngleWF;   // Lưu góc giây cho WF
-    // Sensor Screens
+    String lastTimeString;
+    String lastDateStringWF;
+    String lastDayStringWF;
+    int lastSecondAngleWF;
     int lastDisplayedSteps;
     int lastDisplayedHR;
     int lastDisplayedSpO2;
-    String lastDateStringSens; // Lưu chuỗi ngày/giờ cho Sensor/Env/IMU
+    String lastDateStringSens;
     float lastTempEnv;
     float lastPresEnv;
     String lastTimeEnv;
-    // String lastTimeEnv; // Không cần nếu dùng lastDateStringSens
     float lastAxIMU, lastAyIMU, lastAzIMU;
     float lastGxIMU, lastGyIMU, lastGzIMU;
-    // WiFi Icon
     bool lastWifiState;
-    // Cờ Redraw
-    bool needsRedrawCurrentScreen; // Cờ chung
+    bool needsRedrawCurrentScreen;
 
-    // --- Dữ liệu Tính toán UI (Cho Watch Face) ---
     float x[NUM_POINTS], y[NUM_POINTS];
     float px[NUM_POINTS], py[NUM_POINTS];
     float lx[NUM_POINTS], ly[NUM_POINTS];
     int startHour[12];
     int startMinute[60];
 
-    // --- Hàm Private ---
     static void taskFunction(void* pvParameters);
     void updateDisplay();
 
-    // --- Hàm Vẽ Chính ---
     void drawWatchFaceScreen(bool redrawStatic);
     void drawSensorPrimaryScreen(bool redrawStatic);
     void drawEnvironmentScreen(bool redrawStatic);
     void drawImuDataScreen(bool redrawStatic);
 
-    // --- Hàm Vẽ Phụ Trợ ---
     void clearScreen();
     void drawWifiIcon();
-    // Phụ trợ Watch Face
     void drawClockFace();
     void updateWatchFaceTimeDisplay(int angle, const String& currentDay, const String& currentTime);
-    void updateWatchFaceDateDisplay(const String& fullDateStr); // Sửa tên và kiểu tham số
-    // Hàm vẽ tối ưu (ĐÃ SỬA THAM SỐ THAM CHIẾU)
-    void drawStringOptimized(const String& text, int x, int y, int font, uint16_t textColor, uint16_t bgColor, int datum, String& lastText, int clearWidth = -1, int clearHeight = -1);
-    void drawFloatOptimized(float value, int decimalPlaces, const String& unit, int x, int y, int font, uint16_t textColor, uint16_t bgColor, int datum, float& lastValue, const char* format = nullptr, int clearWidth = -1, int clearHeight = -1);
-    void drawIntOptimized(int value, const String& unit, int x, int y, int font, uint16_t textColor, uint16_t bgColor, int datum, int& lastValue, const char* defaultText = "--", int clearWidth = -1, int clearHeight = -1, int validThreshold = -9999);
+    void updateWatchFaceDateDisplay(const String& fullDateStr);
+
+    void drawStringOptimized(const String& text, int x, int y, const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, uint8_t datum, String& lastText, int clearWidth = -1, int clearHeight = -1);
+    void drawFloatOptimized(float value, int decimalPlaces, const String& unit, int x, int y, const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, uint8_t datum, float& lastValue, const char* format = nullptr, int clearWidth = -1, int clearHeight = -1);
+    void drawIntOptimized(int value, const String& unit, int x, int y, const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, uint8_t datum, int& lastValue, const char* defaultText = "--", int clearWidth = -1, int clearHeight = -1, int validThreshold = -9999);
 };
 
 #endif // DISPLAY_MANAGER_H
