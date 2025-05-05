@@ -63,7 +63,7 @@ void handleLongPressStart() {
      Serial.println("Button LongPressStart()");
      isRebootHandled = false; // Reset cờ khi bắt đầu nhấn giữ mới
      // Có thể thêm hành động khác ở đây nếu muốn (ví dụ: toggle theme)
-     // display.toggleTheme();
+     display.toggleTheme();
 }
 
 void handleDuringLongPress() {

@@ -205,47 +205,57 @@ void BluetoothManager::sendData() {
         xSemaphoreGive(dataMutex); // Trả mutex sớm nhất có thể
 
         // --- Bắt đầu ghép chuỗi JSON ---
-        String jsonStr = "{"; // Khởi tạo chuỗi
+        String jsonStr = "{";
+        char buffer[15]; // Buffer cho dtostrf
 
-        // Dùng dtostrf cho float để kiểm soát định dạng và tránh lỗi String() với NAN/INF
-        char buffer[15]; // Buffer đủ lớn cho số float
+        // IMU Data
+        dtostrf(_ax, 1, 2, buffer); jsonStr += "\"ax\":" + String(buffer); // Giảm width xuống 1 để tránh thừa khoảng trắng
+        dtostrf(_ay, 1, 2, buffer); jsonStr += ", \"ay\":" + String(buffer);
+        dtostrf(_az, 1, 2, buffer); jsonStr += ", \"az\":" + String(buffer);
+        dtostrf(_gx, 1, 2, buffer); jsonStr += ", \"gx\":" + String(buffer);
+        dtostrf(_gy, 1, 2, buffer); jsonStr += ", \"gy\":" + String(buffer);
+        dtostrf(_gz, 1, 2, buffer); jsonStr += ", \"gz\":" + String(buffer);
 
-        dtostrf(_ax, 4, 2, buffer); // (value, minStringWidthIncDecimalPoint, numVarsAfterDecimal, buffer)
-        jsonStr += "\"ax\":" + String(buffer);
-        dtostrf(_ay, 4, 2, buffer);
-        jsonStr += ", \"ay\":" + String(buffer);
-        dtostrf(_az, 4, 2, buffer);
-        jsonStr += ", \"az\":" + String(buffer);
-        dtostrf(_gx, 6, 2, buffer); // Tăng width cho gyro
-        jsonStr += ", \"gx\":" + String(buffer);
-        dtostrf(_gy, 6, 2, buffer);
-        jsonStr += ", \"gy\":" + String(buffer);
-        dtostrf(_gz, 6, 2, buffer);
-        jsonStr += ", \"gz\":" + String(buffer);
-
+        // Sensor Data (Int/Long)
         jsonStr += ", \"steps\":" + String(_steps);
         jsonStr += ", \"hr\":" + String(_hr);
         jsonStr += ", \"spo2\":" + String(_spo2);
         jsonStr += ", \"ir\":" + String(_ir);
         jsonStr += ", \"red\":" + String(_red);
-        jsonStr += ", \"wifi\":" + String(_wifi ? "true" : "false");
 
-        // Xử lý nhiệt độ và áp suất (kiểm tra NAN)
+        // WiFi Status (Bool)
+        jsonStr += ", \"wifi\":" + String(_wifi ? "true" : "false"); // <<< Dùng "true"/"false" trực tiếp
+
+        // Temperature (Float, xử lý NAN)
+        jsonStr += ", \"temp\":"; // Thêm key trước
         if (!isnan(_temp)) {
-            dtostrf(_temp, 4, 1, buffer); // 1 chữ số thập phân
-            jsonStr += ", \"temp\":" + String(buffer);
+            dtostrf(_temp, 1, 1, buffer); // 1 chữ số thập phân, width 1
+            jsonStr += String(buffer);
         } else {
-             jsonStr += ", \"temp\":null"; // Gửi null nếu là NAN
+             jsonStr += "null"; // <<< Gửi giá trị null JSON
         }
+
+        // Pressure (Float, xử lý NAN)
+        jsonStr += ", \"pres\":"; // Thêm key trước
         if (!isnan(_pres)) {
-             dtostrf(_pres, 7, 0, buffer); // 0 chữ số thập phân, width lớn hơn cho Pa
-             jsonStr += ", \"pres\":" + String(buffer);
+             dtostrf(_pres, 1, 0, buffer); // 0 chữ số thập phân, width 1
+             jsonStr += String(buffer);
         } else {
-             jsonStr += ", \"pres\":null";
+             jsonStr += "null"; // <<< Gửi giá trị null JSON
         }
 
+        // Timestamp (String)
+        jsonStr += ", \"timestamp\":\""; // Mở ngoặc kép cho chuỗi timestamp
+        // <<< XỬ LÝ CHUỖI TIMESTAMP (QUAN TRỌNG) >>>
+        // Cần đảm bảo _timestamp không chứa ký tự đặc biệt gây lỗi JSON (như dấu ")
+        // Nếu _timestamp có thể là "Not initialized" hoặc tương tự, vẫn ổn
+        if (_timestamp.length() > 0) {
+            // TODO: Nếu cần, thêm bước escape các ký tự đặc biệt trong _timestamp
+            // Ví dụ đơn giản (có thể chưa đủ): _timestamp.replace("\"", "\\\"");
+            jsonStr += _timestamp;
+        }
+        jsonStr += "\""; // <<< ĐÓNG NGOẶC KÉP CHO TIMESTAMP >>>
 
-        jsonStr += ", \"timestamp\":\"" + _timestamp + "\"";
         jsonStr += "}"; // Kết thúc chuỗi JSON
         // --- Kết thúc ghép chuỗi JSON ---
 
@@ -353,7 +363,7 @@ void BluetoothManager::setStatus(const String &status) {
         // Gửi notify nếu đã kết nối và char hợp lệ
         if (wasConnected && pStatusCharacteristic != nullptr) {
              try {
-                 // Serial.println("BLE Sending Status: " + status); // Debug
+                 Serial.println("BLE Sending Status: " + status); // Debug
                  pStatusCharacteristic->setValue(status);
                  pStatusCharacteristic->notify();
              } catch (...) {
