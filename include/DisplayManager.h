@@ -1,4 +1,3 @@
-// include/DisplayManager.h
 #ifndef DISPLAY_MANAGER_H
 #define DISPLAY_MANAGER_H
 
@@ -8,9 +7,11 @@
 #include <SPI.h>              // Required for SPI communication
 
 // --- FONT INCLUDES ---
-#include <Fonts/FreeSans9pt7b.h>       // Font for normal text
-#include <Fonts/FreeSansBold12pt7b.h>  // Font for headings and important data
-#include <Fonts/FreeMonoBold9pt7b.h>   // Monospace font for numerical data
+#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeMonoBold9pt7b.h>
+#include <Fonts/FreeMono9pt7b.h>
 
 // --- Standard & RTOS Includes ---
 #include <time.h>
@@ -19,60 +20,80 @@
 #include <freertos/semphr.h>
 #include "Config.h"
 
-// --- Display orientation constants ---
-#define ORIENTATION_PORTRAIT  0  // Original vertical orientation
-#define ORIENTATION_LANDSCAPE 1  // New horizontal orientation
+// --- DISPLAY DIMENSIONS ---
+#define SCREEN_WIDTH  135
+#define SCREEN_HEIGHT 240
+#define CENTER_X      (SCREEN_WIDTH / 2)
+#define CENTER_Y      (SCREEN_HEIGHT / 2)
 
-// --- Screen dimensions based on orientation ---
-#define SCREEN_WIDTH_LANDSCAPE  240  // Width in landscape mode
-#define SCREEN_HEIGHT_LANDSCAPE 135  // Height in landscape mode
+// --- UI CONSTANTS ---
+#define HEADER_HEIGHT       30
+#define FOOTER_HEIGHT       20
+#define CONTENT_TOP         (HEADER_HEIGHT + 2)
+#define CONTENT_HEIGHT      (SCREEN_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT)
+#define CARD_MARGIN         5
+#define CARD_PADDING        8
+#define CARD_CORNER_RADIUS  6
+#define ICON_SIZE           16
+#define ANIM_DURATION       300  // ms
 
-// --- Màu sắc và Hằng số UI ---
-#define DARK_BACKGROUND   ST77XX_BLACK      // Standard Adafruit
-#define DARK_TEXT         ST77XX_WHITE      // Standard Adafruit
-#define DARK_LINES        0x8410            // Keep custom hex
-#define DARK_BOX          0x5ACB            // Keep custom hex
-#define DARK_HIGHLIGHT    ST77XX_ORANGE     // Standard Adafruit
-#define LIGHT_BACKGROUND  ST77XX_WHITE      // Standard Adafruit
-#define LIGHT_TEXT        ST77XX_BLACK      // Standard Adafruit
-#define LIGHT_LINES       0xC618            // HEX for SILVER
-#define LIGHT_BOX         0xDEFB            // Keep custom hex
-#define LIGHT_HIGHLIGHT   0x000F            // HEX for NAVY
+// --- COLOR PALETTE (DARK THEME) ---
+#define DARK_BACKGROUND   ST77XX_BLACK
+#define DARK_SURFACE      0x2104      // Dark gray for cards
+#define DARK_PRIMARY      0x03EF      // Teal
+#define DARK_SECONDARY    0xFD20      // Coral
+#define DARK_TEXT         ST77XX_WHITE
+#define DARK_TEXT_SECONDARY 0xBDF7    // Light gray
+#define DARK_DIVIDER      0x4208      // Medium gray
+#define DARK_HIGHLIGHT    0x07FF      // Cyan
 
-// Màu sắc chỉ số
-#define COLOR_SPO2        ST77XX_CYAN       // Standard Adafruit
-#define COLOR_HR          0xFDDF            // HEX for PINK
-#define COLOR_STEPS       ST77XX_YELLOW     // Standard Adafruit
-#define COLOR_TEMP        ST77XX_GREEN      // Standard Adafruit
-#define COLOR_PRESSURE    ST77XX_BLUE       // Standard Adafruit
-#define COLOR_ACCEL       ST77XX_RED        // Standard Adafruit
-#define COLOR_GYRO        ST77XX_MAGENTA    // Standard Adafruit
-#define COLOR_DATE        0xD69A            // HEX for LIGHTGREY
-#define COLOR_TIME_DARK   0xAFBF            // Keep custom hex
-#define COLOR_TIME_LIGHT  0x0594            // Keep custom hex
-#define COLOR_DARKGREY    0x7BEF            // HEX for DARKGREY
-#define NUM_POINTS 360
+// --- COLOR PALETTE (LIGHT THEME) ---
+#define LIGHT_BACKGROUND  ST77XX_WHITE
+#define LIGHT_SURFACE     0xEF7D      // Light gray for cards
+#define LIGHT_PRIMARY     0x03EF      // Teal
+#define LIGHT_SECONDARY   0xFD20      // Coral
+#define LIGHT_TEXT        ST77XX_BLACK
+#define LIGHT_TEXT_SECONDARY 0x7BEF   // Medium gray
+#define LIGHT_DIVIDER     0xC618      // Light gray
+#define LIGHT_HIGHLIGHT   0x001F      // Blue
 
-// --- Layout constants for landscape mode ---
-#define CLOCK_CENTER_X     60   // X center of clock in landscape mode
-#define CLOCK_CENTER_Y     67   // Y center of clock in landscape mode
-#define CLOCK_RADIUS       55   // Radius of clock face in landscape mode
-#define DATA_PANEL_X       130  // Starting X for data panel in landscape mode
-#define DATA_PANEL_WIDTH   100  // Width of data panel in landscape mode
+// --- DATA COLORS (CONSISTENT ACROSS THEMES) ---
+#define COLOR_HEART       0xF800      // Red
+#define COLOR_SPO2        0x07FF      // Cyan
+#define COLOR_STEPS       0xFFE0      // Yellow
+#define COLOR_TEMP        0x07E0      // Green
+#define COLOR_PRESSURE    0x001F      // Blue
+#define COLOR_BATTERY     0xAFE0      // Lime
+#define COLOR_WARNING     0xFD00      // Orange
+#define COLOR_SUCCESS     0x07E0      // Green
+#define COLOR_ERROR       0xF800      // Red
 
-// --- Định nghĩa các chế độ màn hình ---
+// --- ANIMATION TYPES ---
+typedef enum {
+    ANIM_NONE = 0,
+    ANIM_FADE_IN,
+    ANIM_FADE_OUT,
+    ANIM_SLIDE_LEFT,
+    ANIM_SLIDE_RIGHT,
+    ANIM_SLIDE_UP,
+    ANIM_SLIDE_DOWN
+} AnimationType;
+
+// --- SCREEN MODES ---
 typedef enum {
     SCREEN_MODE_WATCHFACE = 0,
-    SCREEN_MODE_SENSORS_PRIMARY,
+    SCREEN_MODE_DASHBOARD,
+    SCREEN_MODE_HEALTH,
     SCREEN_MODE_ENVIRONMENT,
-    SCREEN_MODE_IMU_DATA,
+    SCREEN_MODE_SETTINGS,
     SCREEN_MODE_COUNT
 } ScreenMode;
 
+// --- DISPLAY MANAGER CLASS ---
 class DisplayManager {
 public:
     DisplayManager();
-    bool begin(uint8_t orientation = ORIENTATION_LANDSCAPE); // Default to landscape mode
+    bool begin();
     void startTask(UBaseType_t priority = 1);
     void stopTask();
 
@@ -87,19 +108,29 @@ public:
     void toggleScreen();
     void switchDisplayMode();
     void toggleTheme();
-    void setOrientation(uint8_t orientation); // New method to change orientation
     bool isScreenOn() const;
-    uint8_t getOrientation() const; // Get current orientation
+    
+    // Animation control
+    void startAnimation(AnimationType type);
+    bool isAnimating() const;
 
 private:
     Adafruit_ST7789 tft;
     TaskHandle_t taskHandle;
     SemaphoreHandle_t dataMutex;
 
+    // Display state
     bool screenOn;
-    int currentTheme; // 0: Dark, 1: Light
-    uint8_t displayOrientation; // Current orientation
+    int currentTheme;  // 0: Dark, 1: Light
     ScreenMode currentScreenMode;
+    
+    // Animation state
+    AnimationType currentAnimation;
+    unsigned long animStartTime;
+    bool animating;
+    int animProgress;  // 0-100
+
+    // Data state
     bool timeInitializedLocal;
     struct tm timeinfoLocal;
     bool wifiConnectedLocal;
@@ -111,15 +142,15 @@ private:
     float pressureLocal;
     float axLocal, ayLocal, azLocal;
     float gxLocal, gyLocal, gzLocal;
-
+    
+    // Optimization variables
     String lastTimeString;
-    String lastDateStringWF;
-    String lastDayStringWF;
-    int lastSecondAngleWF;
+    String lastDateString;
+    String lastDayString;
+    int lastSecondAngle;
     int lastDisplayedSteps;
     int lastDisplayedHR;
     int lastDisplayedSpO2;
-    String lastDateStringSens;
     float lastTempEnv;
     float lastPresEnv;
     String lastTimeEnv;
@@ -128,37 +159,50 @@ private:
     bool lastWifiState;
     bool needsRedrawCurrentScreen;
 
-    float x[NUM_POINTS], y[NUM_POINTS];
-    float px[NUM_POINTS], py[NUM_POINTS];
-    float lx[NUM_POINTS], ly[NUM_POINTS];
-    int startHour[12];
-    int startMinute[60];
-
+    // Watchface variables
+    float watchX[360], watchY[360];  // Coordinates for watchface
+    
+    // Task function
     static void taskFunction(void* pvParameters);
     void updateDisplay();
 
-    // Screen drawing functions with orientation support
+    // Screen drawing functions
     void drawWatchFaceScreen(bool redrawStatic);
-    void drawSensorPrimaryScreen(bool redrawStatic);
+    void drawDashboardScreen(bool redrawStatic);
+    void drawHealthScreen(bool redrawStatic);
     void drawEnvironmentScreen(bool redrawStatic);
-    void drawImuDataScreen(bool redrawStatic);
-    void drawSensorDataPanel(bool redrawStatic); // New method for landscape data panel
+    void drawSettingsScreen(bool redrawStatic);
 
+    // Helper drawing functions
     void clearScreen();
-    void drawWifiIcon();
-    void drawClockFace();
-    void updateWatchFaceTimeDisplay(int angle, const String& currentDay, const String& currentTime);
-    void updateWatchFaceDateDisplay(const String& fullDateStr);
-
-    // Helper functions for drawing with orientation awareness
-    void drawStringOptimized(const String& text, int x, int y, const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, uint8_t datum, String& lastText, int clearWidth = -1, int clearHeight = -1);
-    void drawFloatOptimized(float value, int decimalPlaces, const String& unit, int x, int y, const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, uint8_t datum, float& lastValue, const char* format = nullptr, int clearWidth = -1, int clearHeight = -1);
-    void drawIntOptimized(int value, const String& unit, int x, int y, const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, uint8_t datum, int& lastValue, const char* defaultText = "--", int clearWidth = -1, int clearHeight = -1, int validThreshold = -9999);
+    void drawHeader(const String& title);
+    void drawFooter();
+    void drawWifiIcon(int x, int y);
+    void drawBatteryIcon(int x, int y, int percentage);
+    void drawCard(int x, int y, int width, int height, const String& title, uint16_t color);
+    void drawButton(int x, int y, int width, int height, const String& label, uint16_t color, bool pressed = false);
+    void drawProgressBar(int x, int y, int width, int height, float percentage, uint16_t color);
+    void drawWatchFace();
     
-    // Get adjusted coordinates based on current orientation
-    void getAdjustedCoordinates(int& x, int& y);
-    int getScreenWidth() const;
-    int getScreenHeight() const;
+    // Animation helpers
+    void updateAnimation();
+    void applyAnimationEffect(int x, int y, int width, int height);
+    
+    // Optimized drawing functions
+    void drawStringOptimized(const String& text, int x, int y, const GFXfont* fontPtr, 
+                            uint16_t textColor, uint16_t bgColor, uint8_t datum, 
+                            String& lastText, int clearWidth = -1, int clearHeight = -1);
+    
+    void drawFloatOptimized(float value, int decimalPlaces, const String& unit, 
+                           int x, int y, const GFXfont* fontPtr, 
+                           uint16_t textColor, uint16_t bgColor, uint8_t datum, 
+                           float& lastValue, const char* format = nullptr, 
+                           int clearWidth = -1, int clearHeight = -1);
+    
+    void drawIntOptimized(int value, const String& unit, int x, int y, 
+                         const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, 
+                         uint8_t datum, int& lastValue, const char* defaultText = "--", 
+                         int clearWidth = -1, int clearHeight = -1, int validThreshold = -9999);
 };
 
 #endif // DISPLAY_MANAGER_H

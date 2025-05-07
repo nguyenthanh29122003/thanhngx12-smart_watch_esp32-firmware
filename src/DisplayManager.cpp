@@ -1,21 +1,19 @@
-// src/DisplayManager.cpp
 #include "DisplayManager.h"
-#include "Config.h"   // If color/font definitions are here
+#include "Config.h"
 #include <Arduino.h>
-#include <WiFi.h>     // Only if drawing WiFi icon
-#include <cmath>      // For isnan, abs, sqrt, pow
+#include <WiFi.h>
+#include <cmath>
 
-// --- TFT Pin Definitions (from old User_Setup.h) ---
+// --- TFT Pin Definitions ---
 #define TFT_CS     7
 #define TFT_DC     39
-#define TFT_RST    40 // Use -1 if RST pin is not used or tied to MCU RST
-#define TFT_BL     45 // Backlight control pin
+#define TFT_RST    40
+#define TFT_BL     45
 
 // --- Backlight Control ---
-#define TFT_BACKLIGHT_ON HIGH // Or LOW depending on your hardware
+#define TFT_BACKLIGHT_ON HIGH
 
-// --- TFT_eSPI Datum Definitions (for compatibility in logic) ---
-// Copied from TFT_eSPI library for reference in draw...Optimized functions
+// --- TFT_eSPI Datum Definitions (for compatibility) ---
 #define TL_DATUM 0 // Top left (default)
 #define TC_DATUM 1 // Top centre
 #define TR_DATUM 2 // Top right
@@ -25,64 +23,38 @@
 #define BL_DATUM 6 // Bottom left
 #define BC_DATUM 7 // Bottom centre
 #define BR_DATUM 8 // Bottom right
-#define L_BASELINE  9 // Left character baseline (Line the 'A' character would sit on)
+#define L_BASELINE  9 // Left character baseline
 #define C_BASELINE 10 // Centre character baseline
 #define R_BASELINE 11 // Right character baseline
-// Note: Adafruit GFX primarily uses top-left for setCursor.
-// Baseline datums are harder to replicate directly.
 
-// --- UI Constants for Landscape Mode ---
-#ifndef SCREEN_WIDTH
-#define SCREEN_WIDTH  240  // Width in landscape mode (was height in portrait)
-#endif
-#ifndef SCREEN_HEIGHT
-#define SCREEN_HEIGHT 135  // Height in landscape mode (was width in portrait)
-#endif
-#ifndef CENTER_X
-#define CENTER_X (SCREEN_WIDTH / 2)
-#endif
-#ifndef CENTER_Y
-#define CENTER_Y (SCREEN_HEIGHT / 2)
-#endif
-#ifndef WATCHFACE_RADIUS
-#define WATCHFACE_RADIUS (SCREEN_HEIGHT / 2 - 10)  // Adjusted for landscape
-#endif
-#ifndef NUM_POINTS
+// --- UI Constants ---
+#define WATCHFACE_RADIUS (SCREEN_WIDTH / 2 - 10)
 #define NUM_POINTS 360
-#endif
 
-// --- Layout Constants for Landscape Mode ---
-#define CLOCK_CENTER_X     60   // X center of clock in landscape mode
-#define CLOCK_CENTER_Y     67   // Y center of clock in landscape mode
-#define DATA_PANEL_X       130  // Starting X for data panel in landscape mode
-#define DATA_PANEL_WIDTH   100  // Width of data panel in landscape mode
-
-// --- Static Data Arrays (Unchanged) ---
+// --- Static Data Arrays ---
 const String daysOfWeek[7] = {"SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"};
 const String daysOfWeekShort[7] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-const String hourLabels[12] = {"00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"}; // Minute/second labels
+const String monthsShort[12] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
 
-// --- Font Selection (Choose appropriate Adafruit GFX fonts) ---
-// You MUST #include these in DisplayManager.h
-const GFXfont* FONT_SMALL = &FreeSans9pt7b;       // Example replacement for Font 2
-const GFXfont* FONT_LARGE = &FreeSansBold12pt7b;  // Example replacement for Font 4
-const GFXfont* FONT_MONO = &FreeMonoBold9pt7b;   // Example monospace font if needed
-// Use 'nullptr' for the default Adafruit classic font (similar to Font 1)
-
+// --- Font Selection ---
+const GFXfont* FONT_SMALL = &FreeSans9pt7b;
+const GFXfont* FONT_SMALL_BOLD = &FreeSansBold9pt7b;
+const GFXfont* FONT_LARGE = &FreeSansBold12pt7b;
+const GFXfont* FONT_MONO = &FreeMonoBold9pt7b;
+const GFXfont* FONT_MONO_SMALL = &FreeMono9pt7b;
 
 // --- Constructor ---
 DisplayManager::DisplayManager()
-    : tft(TFT_CS, TFT_DC, TFT_RST), // Initialize Adafruit TFT object here
+    : tft(TFT_CS, TFT_DC, TFT_RST),
       taskHandle(NULL), screenOn(true), currentTheme(0),
-      displayOrientation(ORIENTATION_LANDSCAPE), // Default to landscape mode
       currentScreenMode(SCREEN_MODE_WATCHFACE),
+      currentAnimation(ANIM_NONE), animating(false), animProgress(0),
       timeInitializedLocal(false), wifiConnectedLocal(false),
       stepCountLocal(0), distanceLocal(0.0f), heartRateLocal(0), spo2Local(-999),
       temperatureLocal(NAN), pressureLocal(NAN),
       axLocal(0.0f), ayLocal(0.0f), azLocal(0.0f), gxLocal(0.0f), gyLocal(0.0f), gzLocal(0.0f),
-      lastTimeString(""), lastDateStringWF(""), lastDayStringWF(""), lastSecondAngleWF(-1),
+      lastTimeString(""), lastDateString(""), lastDayString(""), lastSecondAngle(-1),
       lastDisplayedSteps(-1), lastDisplayedHR(-1), lastDisplayedSpO2(-1000),
-      lastDateStringSens(""),
       lastTempEnv(NAN), lastPresEnv(NAN), lastTimeEnv(""),
       lastAxIMU(NAN), lastAyIMU(NAN), lastAzIMU(NAN), lastGxIMU(NAN), lastGyIMU(NAN), lastGzIMU(NAN),
       lastWifiState(false),
@@ -93,10 +65,1090 @@ DisplayManager::DisplayManager()
     if (dataMutex == NULL) { Serial.println("CRITICAL: Failed to create Display data mutex!"); }
 }
 
-// Helper to calculate cursor position based on datum and text bounds
+// --- begin() ---
+bool DisplayManager::begin() {
+    Serial.println("Initializing Display Manager (Adafruit ST7789)...");
+
+    // Initialize Backlight
+    if (TFT_BL >= 0) {
+        Serial.printf("Initializing Backlight pin %d\n", TFT_BL);
+        pinMode(TFT_BL, OUTPUT);
+        digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
+    } else {
+        Serial.println("Backlight pin not defined.");
+    }
+
+    // Initialize TFT
+    tft.init(SCREEN_WIDTH, SCREEN_HEIGHT);
+    Serial.println("TFT initialized");
+
+    tft.setRotation(0);
+    tft.fillScreen(DARK_BACKGROUND);
+
+    Serial.println("Calculating Watch Face UI points...");
+    // Calculate watchface points
+    for (int i = 0; i < NUM_POINTS; i++) {
+        float angleRad = radians(i - 90);
+        watchX[i] = (WATCHFACE_RADIUS * cos(angleRad)) + CENTER_X;
+        watchY[i] = (WATCHFACE_RADIUS * sin(angleRad)) + CENTER_Y;
+    }
+    
+    Serial.println("Display Manager Initialized.");
+    return true;
+}
+
+// --- Task Management ---
+void DisplayManager::startTask(UBaseType_t priority) {
+    xTaskCreate(taskFunction, "DisplayTask", 4096, this, priority, &taskHandle);
+    if (taskHandle == NULL) Serial.println("CRITICAL: Error creating Display Task!");
+    else Serial.println("Display Task started.");
+}
+
+void DisplayManager::stopTask() {
+    if (taskHandle != NULL) {
+        TaskHandle_t tempHandle = taskHandle; taskHandle = NULL;
+        tft.enableDisplay(false);
+        if (TFT_BL >= 0) digitalWrite(TFT_BL, !TFT_BACKLIGHT_ON);
+        vTaskDelete(tempHandle);
+        Serial.println("Display task stopped.");
+    }
+}
+
+void DisplayManager::taskFunction(void* pvParameters) {
+    DisplayManager* instance = static_cast<DisplayManager*>(pvParameters);
+    if (instance == nullptr) { vTaskDelete(NULL); return; }
+    Serial.println("Display Task running...");
+    while (true) {
+        instance->updateDisplay();
+        vTaskDelay(pdMS_TO_TICKS(16)); // ~60fps
+    }
+}
+
+// --- Data Update ---
+void DisplayManager::updateData(bool wifiConnected,
+                                int stepCount, float distance,
+                                int heartRate, int spo2,
+                                float temperature, float pressure,
+                                float ax, float ay, float az,
+                                float gx, float gy, float gz,
+                                const struct tm* timeinfo, bool timeInitialized) {
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        wifiConnectedLocal = wifiConnected;
+        timeInitializedLocal = timeInitialized;
+        if (timeInitialized && timeinfo != nullptr) timeinfoLocal = *timeinfo;
+        else memset(&timeinfoLocal, 0, sizeof(timeinfoLocal));
+        stepCountLocal = stepCount; distanceLocal = distance;
+        heartRateLocal = heartRate; spo2Local = spo2;
+        temperatureLocal = temperature; pressureLocal = pressure;
+        axLocal = ax; ayLocal = ay; azLocal = az;
+        gxLocal = gx; gyLocal = gy; gzLocal = gz;
+        xSemaphoreGive(dataMutex);
+    } else { Serial.println("Timeout taking display data mutex in updateData!"); }
+}
+
+// --- Animation Control ---
+void DisplayManager::startAnimation(AnimationType type) {
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        currentAnimation = type;
+        animStartTime = millis();
+        animating = true;
+        animProgress = 0;
+        xSemaphoreGive(dataMutex);
+    }
+}
+
+bool DisplayManager::isAnimating() const {
+    bool result = false;
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        result = animating;
+        xSemaphoreGive(dataMutex);
+    }
+    return result;
+}
+
+void DisplayManager::updateAnimation() {
+    if (!animating) return;
+    
+    unsigned long elapsed = millis() - animStartTime;
+    if (elapsed >= ANIM_DURATION) {
+        animating = false;
+        animProgress = 100;
+        return;
+    }
+    
+    // Calculate progress (0-100)
+    animProgress = (elapsed * 100) / ANIM_DURATION;
+}
+
+void DisplayManager::applyAnimationEffect(int x, int y, int width, int height) {
+    if (!animating) return;
+    
+    // Apply different animation effects based on type
+    switch (currentAnimation) {
+        case ANIM_FADE_IN: {
+            // Create a semi-transparent overlay that fades out
+            uint8_t alpha = 255 - (255 * animProgress / 100);
+            uint16_t overlayColor = currentTheme == 0 ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+            // Apply alpha blending (simplified)
+            for (int i = 0; i < width; i += 4) {  // Skip pixels for performance
+                for (int j = 0; j < height; j += 4) {
+                    if (random(100) < alpha) {  // Dithering effect
+                        tft.drawPixel(x + i, y + j, overlayColor);
+                    }
+                }
+            }
+            break;
+        }
+        
+        case ANIM_SLIDE_LEFT: {
+            // Slide content from right to left
+            int offset = width - (width * animProgress / 100);
+            if (offset > 0) {
+                uint16_t bgColor = currentTheme == 0 ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+                tft.fillRect(x + width - offset, y, offset, height, bgColor);
+            }
+            break;
+        }
+        
+        case ANIM_SLIDE_RIGHT: {
+            // Slide content from left to right
+            int offset = width - (width * animProgress / 100);
+            if (offset > 0) {
+                uint16_t bgColor = currentTheme == 0 ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+                tft.fillRect(x, y, offset, height, bgColor);
+            }
+            break;
+        }
+        
+        default:
+            break;
+    }
+}
+
+// --- Main Update Loop ---
+void DisplayManager::updateDisplay() {
+    bool localScreenOn = false;
+    ScreenMode localScreenMode;
+    bool needsRedraw = false;
+
+    // Safely get current state
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        localScreenOn = screenOn;
+        localScreenMode = currentScreenMode;
+        needsRedraw = needsRedrawCurrentScreen;
+        if (needsRedraw) needsRedrawCurrentScreen = false;
+        
+        // Update animation state
+        updateAnimation();
+        
+        xSemaphoreGive(dataMutex);
+    } else {
+        return;
+    }
+
+    // If screen is off, do nothing
+    if (!localScreenOn) return;
+
+    // If a full redraw is needed, reset optimization variables
+    if (needsRedraw) {
+        clearScreen();
+        lastTimeString = ""; lastDateString = ""; lastDayString = ""; lastSecondAngle = -1;
+        lastDisplayedSteps = -1; lastDisplayedHR = -1; lastDisplayedSpO2 = -1000;
+        lastTempEnv = NAN; lastPresEnv = NAN; lastTimeEnv = "";
+        lastAxIMU = lastAyIMU = lastAzIMU = lastGxIMU = lastGyIMU = lastGzIMU = NAN;
+        lastWifiState = !wifiConnectedLocal;
+    }
+
+    // Call the drawing function for the current mode
+    switch (localScreenMode) {
+        case SCREEN_MODE_WATCHFACE:     drawWatchFaceScreen(needsRedraw); break;
+        case SCREEN_MODE_DASHBOARD:     drawDashboardScreen(needsRedraw); break;
+        case SCREEN_MODE_HEALTH:        drawHealthScreen(needsRedraw); break;
+        case SCREEN_MODE_ENVIRONMENT:   drawEnvironmentScreen(needsRedraw); break;
+        case SCREEN_MODE_SETTINGS:      drawSettingsScreen(needsRedraw); break;
+        default: break;
+    }
+}
+
+// --- Screen Drawing Functions ---
+
+void DisplayManager::drawWatchFaceScreen(bool redrawStatic) {
+    struct tm localTimeCopy;
+    bool isTimeValid = false;
+    bool localWifiConnected = false;
+
+    // Safely get data
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        isTimeValid = timeInitializedLocal;
+        if (isTimeValid) localTimeCopy = timeinfoLocal;
+        localWifiConnected = wifiConnectedLocal;
+        xSemaphoreGive(dataMutex);
+    } else { return; }
+
+    // Get theme colors
+    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    uint16_t accentColor = (currentTheme == 0) ? DARK_PRIMARY : LIGHT_PRIMARY;
+    uint16_t secondaryColor = (currentTheme == 0) ? DARK_SECONDARY : LIGHT_SECONDARY;
+
+    // Clear screen if needed
+    if (redrawStatic) {
+        tft.fillScreen(bgColor);
+        
+        // Draw watchface
+        drawWatchFace();
+        
+        // Draw status icons at top
+        drawWifiIcon(10, 10);
+        drawBatteryIcon(SCREEN_WIDTH - 25, 10, 85); // 85% battery
+    }
+
+    // Handle invalid time display
+    if (!isTimeValid) {
+        if (lastTimeString != "WaitingWF") {
+            drawStringOptimized("Waiting for", CENTER_X, CENTER_Y - 10, FONT_SMALL, 
+                               textColor, bgColor, MC_DATUM, lastTimeString, SCREEN_WIDTH);
+            
+            String dummyLast = "";
+            drawStringOptimized("Time Sync...", CENTER_X, CENTER_Y + 10, FONT_SMALL, 
+                               textColor, bgColor, MC_DATUM, dummyLast, SCREEN_WIDTH);
+            lastTimeString = "WaitingWF";
+            lastSecondAngle = -1; lastDateString = ""; lastDayString = "";
+        }
+        return;
+    }
+
+    // If we were waiting, force redraw
+    if (lastTimeString == "WaitingWF") {
+        redrawStatic = true;
+        lastTimeString = ""; lastDateString = ""; lastDayString = ""; lastSecondAngle = -1;
+    }
+
+    // Format time and date strings
+    int hour = localTimeCopy.tm_hour;
+    int minute = localTimeCopy.tm_min;
+    int second = localTimeCopy.tm_sec;
+    int angle = second * 6; // Angle for second hand (0-360)
+    
+    char timeStr[9];
+    sprintf(timeStr, "%02d:%02d:%02d", hour, minute, second);
+    String currentTime = String(timeStr);
+    
+    String currentDay = daysOfWeek[localTimeCopy.tm_wday];
+    String currentDate = String(localTimeCopy.tm_mday) + " " + 
+                         monthsShort[localTimeCopy.tm_mon] + " " +
+                         String(1900 + localTimeCopy.tm_year);
+
+    // Check what changed
+    bool timeChanged = (currentTime != lastTimeString);
+    bool dayChanged = (currentDay != lastDayString);
+    bool dateChanged = (currentDate != lastDateString);
+    bool angleChanged = (angle != lastSecondAngle);
+
+    // Draw digital time
+    if (timeChanged || redrawStatic) {
+        drawStringOptimized(currentTime, CENTER_X, CENTER_Y + 40, FONT_LARGE, 
+                           accentColor, bgColor, MC_DATUM, lastTimeString, 120, 30);
+    }
+    
+    // Draw date
+    if (dateChanged || redrawStatic) {
+        drawStringOptimized(currentDate, CENTER_X, CENTER_Y + 70, FONT_SMALL, 
+                           textColor, bgColor, MC_DATUM, lastDateString, 120, 20);
+    }
+    
+    // Draw day of week
+    if (dayChanged || redrawStatic) {
+        drawStringOptimized(currentDay, CENTER_X, 20, FONT_SMALL_BOLD, 
+                           secondaryColor, bgColor, MC_DATUM, lastDayString, 120, 20);
+    }
+    
+    // Draw analog hands
+    // Hour hand
+    float hourAngle = ((hour % 12) * 30 + (minute / 2)) * PI / 180.0;
+    int hourHandLength = WATCHFACE_RADIUS - 30;
+    int hourX = CENTER_X + hourHandLength * cos(hourAngle - PI/2);
+    int hourY = CENTER_Y + hourHandLength * sin(hourAngle - PI/2);
+    
+    // Minute hand
+    float minuteAngle = (minute * 6) * PI / 180.0;
+    int minuteHandLength = WATCHFACE_RADIUS - 15;
+    int minuteX = CENTER_X + minuteHandLength * cos(minuteAngle - PI/2);
+    int minuteY = CENTER_Y + minuteHandLength * sin(minuteAngle - PI/2);
+    
+    // Second hand
+    float secondAngle = (second * 6) * PI / 180.0;
+    int secondHandLength = WATCHFACE_RADIUS - 10;
+    int secondX = CENTER_X + secondHandLength * cos(secondAngle - PI/2);
+    int secondY = CENTER_Y + secondHandLength * sin(secondAngle - PI/2);
+    
+    // Redraw hands if time changed or full redraw
+    if (timeChanged || angleChanged || redrawStatic) {
+        // Clear previous hands by redrawing the center of the watchface
+        tft.fillCircle(CENTER_X, CENTER_Y, WATCHFACE_RADIUS - 10, bgColor);
+        
+        // Draw hour and minute hands
+        tft.drawLine(CENTER_X, CENTER_Y, hourX, hourY, textColor);
+        tft.drawLine(CENTER_X-1, CENTER_Y, hourX-1, hourY, textColor); // Thicker line
+        
+        tft.drawLine(CENTER_X, CENTER_Y, minuteX, minuteY, textColor);
+        tft.drawLine(CENTER_X+1, CENTER_Y, minuteX+1, minuteY, textColor); // Thicker line
+        
+        // Draw second hand with accent color
+        tft.drawLine(CENTER_X, CENTER_Y, secondX, secondY, secondaryColor);
+        
+        // Draw center circle
+        tft.fillCircle(CENTER_X, CENTER_Y, 4, accentColor);
+        tft.fillCircle(CENTER_X, CENTER_Y, 2, textColor);
+    }
+    
+    // Update last values
+    lastTimeString = currentTime;
+    lastDayString = currentDay;
+    lastDateString = currentDate;
+    lastSecondAngle = angle;
+    
+    // Apply animation effect if animating
+    if (animating) {
+        applyAnimationEffect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    }
+}
+
+void DisplayManager::drawDashboardScreen(bool redrawStatic) {
+    // Get data
+    struct tm localTimeCopy;
+    bool isTimeValid = false;
+    int localSteps = 0;
+    int localHR = 0;
+    int localSpO2 = -999;
+    float localTemp = NAN;
+    
+    // Safely get data
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        isTimeValid = timeInitializedLocal;
+        if (isTimeValid) localTimeCopy = timeinfoLocal;
+        localSteps = stepCountLocal;
+        localHR = heartRateLocal;
+        localSpO2 = spo2Local;
+        localTemp = temperatureLocal;
+        xSemaphoreGive(dataMutex);
+    } else { return; }
+    
+    // Get theme colors
+    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    uint16_t cardColor = (currentTheme == 0) ? DARK_SURFACE : LIGHT_SURFACE;
+    uint16_t accentColor = (currentTheme == 0) ? DARK_PRIMARY : LIGHT_PRIMARY;
+    
+    // Draw header and footer if needed
+    if (redrawStatic) {
+        clearScreen();
+        drawHeader("Dashboard");
+        drawFooter();
+    }
+    
+    // Draw cards for each metric
+    int cardWidth = SCREEN_WIDTH - 2*CARD_MARGIN;
+    int cardHeight = 45;
+    int cardY = HEADER_HEIGHT + CARD_MARGIN;
+    
+    // Steps card
+    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Steps", COLOR_STEPS);
+    drawIntOptimized(localSteps, "", CARD_MARGIN + cardWidth - 10, cardY + 30, 
+                    FONT_LARGE, textColor, cardColor, TR_DATUM, 
+                    lastDisplayedSteps, "--", cardWidth - 20);
+    
+    // Heart rate card
+    cardY += cardHeight + CARD_MARGIN;
+    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Heart Rate", COLOR_HEART);
+    drawIntOptimized(localHR, " BPM", CARD_MARGIN + cardWidth - 10, cardY + 30, 
+                    FONT_LARGE, textColor, cardColor, TR_DATUM, 
+                    lastDisplayedHR, "--", cardWidth - 20);
+    
+    // SpO2 card
+    cardY += cardHeight + CARD_MARGIN;
+    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "SpO2", COLOR_SPO2);
+    drawIntOptimized(localSpO2, "%", CARD_MARGIN + cardWidth - 10, cardY + 30, 
+                    FONT_LARGE, textColor, cardColor, TR_DATUM, 
+                    lastDisplayedSpO2, "--", cardWidth - 20);
+    
+    // Temperature card
+    cardY += cardHeight + CARD_MARGIN;
+    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Temperature", COLOR_TEMP);
+    drawFloatOptimized(localTemp, 1, "°C", CARD_MARGIN + cardWidth - 10, cardY + 30, 
+                      FONT_LARGE, textColor, cardColor, TR_DATUM, 
+                      lastTempEnv, "%.1f", cardWidth - 20);
+    
+    // Apply animation effect if animating
+    if (animating) {
+        applyAnimationEffect(0, HEADER_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT);
+    }
+}
+
+void DisplayManager::drawHealthScreen(bool redrawStatic) {
+    // Get data
+    int localHR = 0;
+    int localSpO2 = -999;
+    
+    // Safely get data
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        localHR = heartRateLocal;
+        localSpO2 = spo2Local;
+        xSemaphoreGive(dataMutex);
+    } else { return; }
+    
+    // Get theme colors
+    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    uint16_t cardColor = (currentTheme == 0) ? DARK_SURFACE : LIGHT_SURFACE;
+    
+    // Draw header and footer if needed
+    if (redrawStatic) {
+        clearScreen();
+        drawHeader("Health");
+        drawFooter();
+    }
+    
+    // Draw large heart rate display
+    int cardWidth = SCREEN_WIDTH - 2*CARD_MARGIN;
+    int cardHeight = 80;
+    int cardY = HEADER_HEIGHT + CARD_MARGIN;
+    
+    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Heart Rate", COLOR_HEART);
+    
+    // Draw heart rate value
+    char hrStr[10];
+    sprintf(hrStr, "%d", localHR > 0 ? localHR : 0);
+    String hrValue = String(hrStr);
+    String lastHrValue = String(lastDisplayedHR > 0 ? lastDisplayedHR : 0);
+    
+    drawStringOptimized(hrValue, CENTER_X, cardY + 40, FONT_LARGE, 
+                       COLOR_HEART, cardColor, MC_DATUM, lastHrValue, 60, 30);
+    
+    // Draw BPM label
+    String bpmLabel = "BPM";
+    String lastBpmLabel = "";
+    drawStringOptimized(bpmLabel, CENTER_X, cardY + 65, FONT_SMALL, 
+                       textColor, cardColor, MC_DATUM, lastBpmLabel, 40, 20);
+    
+    // Draw SpO2 display
+    cardY += cardHeight + CARD_MARGIN;
+    cardHeight = 80;
+    
+    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Blood Oxygen", COLOR_SPO2);
+    
+    // Draw SpO2 value
+    char spo2Str[10];
+    sprintf(spo2Str, "%d", localSpO2 > 0 ? localSpO2 : 0);
+    String spo2Value = String(spo2Str);
+    String lastSpo2Value = String(lastDisplayedSpO2 > 0 ? lastDisplayedSpO2 : 0);
+    
+    drawStringOptimized(spo2Value, CENTER_X, cardY + 40, FONT_LARGE, 
+                       COLOR_SPO2, cardColor, MC_DATUM, lastSpo2Value, 60, 30);
+    
+    // Draw % label
+    String percentLabel = "%";
+    String lastPercentLabel = "";
+    drawStringOptimized(percentLabel, CENTER_X, cardY + 65, FONT_SMALL, 
+                       textColor, cardColor, MC_DATUM, lastPercentLabel, 20, 20);
+    
+    // Update last values
+    lastDisplayedHR = localHR;
+    lastDisplayedSpO2 = localSpO2;
+    
+    // Apply animation effect if animating
+    if (animating) {
+        applyAnimationEffect(0, HEADER_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT);
+    }
+}
+
+void DisplayManager::drawEnvironmentScreen(bool redrawStatic) {
+    // Get data
+    float localTemp = NAN;
+    float localPres = NAN;
+    
+    // Safely get data
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        localTemp = temperatureLocal;
+        localPres = pressureLocal;
+        xSemaphoreGive(dataMutex);
+    } else { return; }
+    
+    // Get theme colors
+    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    uint16_t cardColor = (currentTheme == 0) ? DARK_SURFACE : LIGHT_SURFACE;
+    
+    // Draw header and footer if needed
+    if (redrawStatic) {
+        clearScreen();
+        drawHeader("Environment");
+        drawFooter();
+    }
+    
+    // Draw temperature display
+    int cardWidth = SCREEN_WIDTH - 2*CARD_MARGIN;
+    int cardHeight = 80;
+    int cardY = HEADER_HEIGHT + CARD_MARGIN;
+    
+    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Temperature", COLOR_TEMP);
+    
+    // Draw temperature value and unit
+    drawFloatOptimized(localTemp, 1, "°C", CENTER_X, cardY + 45, 
+                      FONT_LARGE, COLOR_TEMP, cardColor, MC_DATUM, 
+                      lastTempEnv, "%.1f", 100, 30);
+    
+    // Draw pressure display
+    cardY += cardHeight + CARD_MARGIN;
+    cardHeight = 80;
+    
+    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Pressure", COLOR_PRESSURE);
+    
+    // Convert pressure to hPa for display
+    float presHpa = isnan(localPres) ? NAN : localPres / 100.0f;
+    float lastPresHpa = isnan(lastPresEnv) ? NAN : lastPresEnv / 100.0f;
+    
+    // Draw pressure value and unit
+    drawFloatOptimized(presHpa, 1, " hPa", CENTER_X, cardY + 45, 
+                      FONT_LARGE, COLOR_PRESSURE, cardColor, MC_DATUM, 
+                      lastPresHpa, "%.1f", 120, 30);
+    
+    // Update last values
+    lastTempEnv = localTemp;
+    lastPresEnv = localPres;
+    
+    // Apply animation effect if animating
+    if (animating) {
+        applyAnimationEffect(0, HEADER_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT);
+    }
+}
+
+void DisplayManager::drawSettingsScreen(bool redrawStatic) {
+    // Get theme colors
+    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    uint16_t primaryColor = (currentTheme == 0) ? DARK_PRIMARY : LIGHT_PRIMARY;
+    uint16_t secondaryColor = (currentTheme == 0) ? DARK_SECONDARY : LIGHT_SECONDARY;
+    
+    // Draw header and footer if needed
+    if (redrawStatic) {
+        clearScreen();
+        drawHeader("Settings");
+        drawFooter();
+    }
+    
+    // Draw settings buttons
+    int buttonWidth = SCREEN_WIDTH - 2*CARD_MARGIN;
+    int buttonHeight = 35;
+    int buttonY = HEADER_HEIGHT + CARD_MARGIN;
+    int buttonSpacing = 10;
+    
+    // Theme toggle button
+    drawButton(CARD_MARGIN, buttonY, buttonWidth, buttonHeight, 
+              "Toggle Theme", primaryColor);
+    
+    // Display toggle button
+    buttonY += buttonHeight + buttonSpacing;
+    drawButton(CARD_MARGIN, buttonY, buttonWidth, buttonHeight, 
+              "Display On/Off", secondaryColor);
+    
+    // Reset button
+    buttonY += buttonHeight + buttonSpacing;
+    drawButton(CARD_MARGIN, buttonY, buttonWidth, buttonHeight, 
+              "Reset Device", COLOR_WARNING);
+    
+    // About section
+    buttonY += buttonHeight + 2*buttonSpacing;
+    
+    // Draw about text
+    String aboutTitle = "About";
+    String lastAboutTitle = "";
+    drawStringOptimized(aboutTitle, CENTER_X, buttonY, FONT_SMALL_BOLD, 
+                       textColor, bgColor, MC_DATUM, lastAboutTitle, 60, 20);
+    
+    buttonY += 25;
+    String versionText = "Firmware v1.0.0";
+    String lastVersionText = "";
+    drawStringOptimized(versionText, CENTER_X, buttonY, FONT_SMALL, 
+                       textColor, bgColor, MC_DATUM, lastVersionText, 120, 20);
+    
+    // Apply animation effect if animating
+    if (animating) {
+        applyAnimationEffect(0, HEADER_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT);
+    }
+}
+
+// --- Helper Drawing Functions ---
+
+void DisplayManager::clearScreen() {
+    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    tft.fillScreen(bgColor);
+}
+
+void DisplayManager::drawHeader(const String& title) {
+    uint16_t headerBgColor = (currentTheme == 0) ? DARK_PRIMARY : LIGHT_PRIMARY;
+    uint16_t headerTextColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    
+    // Draw header background
+    tft.fillRect(0, 0, SCREEN_WIDTH, HEADER_HEIGHT, headerBgColor);
+    
+    // Draw title
+    tft.setFont(FONT_SMALL_BOLD);
+    tft.setTextColor(headerTextColor);
+    
+    // Calculate text position for centering
+    int16_t x1, y1;
+    uint16_t w, h;
+    tft.getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
+    
+    int textX = CENTER_X - w/2 - x1;
+    int textY = (HEADER_HEIGHT - h)/2 - y1;
+    
+    tft.setCursor(textX, textY);
+    tft.print(title);
+    
+    // Draw WiFi and battery icons
+    drawWifiIcon(10, (HEADER_HEIGHT - 12)/2);
+    drawBatteryIcon(SCREEN_WIDTH - 25, (HEADER_HEIGHT - 12)/2, 85); // 85% battery
+}
+
+void DisplayManager::drawFooter() {
+    uint16_t footerBgColor = (currentTheme == 0) ? DARK_SURFACE : LIGHT_SURFACE;
+    uint16_t footerTextColor = (currentTheme == 0) ? DARK_TEXT_SECONDARY : LIGHT_TEXT_SECONDARY;
+    
+    // Draw footer background
+    tft.fillRect(0, SCREEN_HEIGHT - FOOTER_HEIGHT, SCREEN_WIDTH, FOOTER_HEIGHT, footerBgColor);
+    
+    // Get current time for footer
+    struct tm localTimeCopy;
+    bool isTimeValid = false;
+    
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        isTimeValid = timeInitializedLocal;
+        if (isTimeValid) localTimeCopy = timeinfoLocal;
+        xSemaphoreGive(dataMutex);
+    }
+    
+    // Draw time in footer
+    String timeStr;
+    if (isTimeValid) {
+        char timeBuf[6];
+        sprintf(timeBuf, "%02d:%02d", localTimeCopy.tm_hour, localTimeCopy.tm_min);
+        timeStr = String(timeBuf);
+    } else {
+        timeStr = "--:--";
+    }
+    
+    tft.setFont(nullptr); // Use default font for footer
+    tft.setTextColor(footerTextColor);
+    
+    // Calculate text position for centering
+    int16_t x1, y1;
+    uint16_t w, h;
+    tft.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
+    
+    int textX = CENTER_X - w/2 - x1;
+    int textY = SCREEN_HEIGHT - FOOTER_HEIGHT/2 - h/2 - y1;
+    
+    tft.setCursor(textX, textY);
+    tft.print(timeStr);
+}
+
+void DisplayManager::drawWifiIcon(int x, int y) {
+    bool localWifiConnected;
+    
+    // Safely get data
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        localWifiConnected = wifiConnectedLocal;
+        xSemaphoreGive(dataMutex);
+    } else { return; }
+    
+    uint16_t iconColor;
+    if (localWifiConnected) {
+        iconColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    } else {
+        iconColor = (currentTheme == 0) ? DARK_TEXT_SECONDARY : LIGHT_TEXT_SECONDARY;
+    }
+    
+    // Draw WiFi icon (simplified)
+    if (localWifiConnected) {
+        // Connected - draw 3 arcs
+        tft.drawCircle(x + 6, y + 10, 8, iconColor);
+        tft.drawCircle(x + 6, y + 10, 5, iconColor);
+        tft.fillCircle(x + 6, y + 10, 2, iconColor);
+    } else {
+        // Disconnected - draw crossed out icon
+        tft.drawCircle(x + 6, y + 10, 8, iconColor);
+        tft.drawLine(x, y, x + 12, y + 12, iconColor);
+    }
+    
+    lastWifiState = localWifiConnected;
+}
+
+void DisplayManager::drawBatteryIcon(int x, int y, int percentage) {
+    uint16_t iconColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    uint16_t fillColor;
+    
+    // Determine fill color based on battery level
+    if (percentage > 60) {
+        fillColor = COLOR_SUCCESS;
+    } else if (percentage > 20) {
+        fillColor = COLOR_WARNING;
+    } else {
+        fillColor = COLOR_ERROR;
+    }
+    
+    // Draw battery outline
+    tft.drawRect(x, y, 20, 10, iconColor);
+    tft.fillRect(x + 20, y + 2, 2, 6, iconColor); // Battery nub
+    
+    // Draw battery fill based on percentage
+    int fillWidth = map(percentage, 0, 100, 0, 18);
+    if (fillWidth > 0) {
+        tft.fillRect(x + 1, y + 1, fillWidth, 8, fillColor);
+    }
+}
+
+void DisplayManager::drawCard(int x, int y, int width, int height, const String& title, uint16_t color) {
+    uint16_t cardBgColor = (currentTheme == 0) ? DARK_SURFACE : LIGHT_SURFACE;
+    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    
+    // Draw card background with rounded corners
+    tft.fillRoundRect(x, y, width, height, CARD_CORNER_RADIUS, cardBgColor);
+    
+    // Draw colored accent border
+    tft.drawRoundRect(x, y, width, height, CARD_CORNER_RADIUS, color);
+    
+    // Draw title if provided
+    if (title.length() > 0) {
+        tft.setFont(FONT_SMALL);
+        tft.setTextColor(color);
+        
+        tft.setCursor(x + CARD_PADDING, y + CARD_PADDING + 10);
+        tft.print(title);
+    }
+}
+
+void DisplayManager::drawButton(int x, int y, int width, int height, const String& label, uint16_t color, bool pressed) {
+    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    
+    // Draw button background with rounded corners
+    uint16_t bgColor = pressed ? (color & 0x7BEF) : color; // Darken when pressed
+    
+    tft.fillRoundRect(x, y, width, height, CARD_CORNER_RADIUS, bgColor);
+    
+    // Draw button label
+    tft.setFont(FONT_SMALL);
+    tft.setTextColor(textColor);
+    
+    // Calculate text position for centering
+    int16_t x1, y1;
+    uint16_t w, h;
+    tft.getTextBounds(label, 0, 0, &x1, &y1, &w, &h);
+    
+    int textX = x + width/2 - w/2 - x1;
+    int textY = y + height/2 - h/2 - y1;
+    
+    tft.setCursor(textX, textY);
+    tft.print(label);
+    
+    // Draw button highlight effect
+    if (!pressed) {
+        // Top highlight
+        tft.drawFastHLine(x + 2, y + 1, width - 4, textColor & 0xF7DE); // 50% transparent white
+        tft.drawFastVLine(x + 1, y + 2, 2, textColor & 0xF7DE);
+        tft.drawFastVLine(x + width - 2, y + 2, 2, textColor & 0xF7DE);
+    }
+}
+
+void DisplayManager::drawProgressBar(int x, int y, int width, int height, float percentage, uint16_t color) {
+    uint16_t bgColor = (currentTheme == 0) ? DARK_SURFACE : LIGHT_SURFACE;
+    
+    // Constrain percentage to 0-100
+    percentage = constrain(percentage, 0.0f, 100.0f);
+    
+    // Draw background
+    tft.fillRoundRect(x, y, width, height, height/2, bgColor);
+    
+    // Draw border
+    tft.drawRoundRect(x, y, width, height, height/2, color);
+    
+    // Calculate fill width
+    int fillWidth = (percentage / 100.0f) * (width - 4);
+    if (fillWidth > 0) {
+        // Draw fill with rounded ends
+        if (fillWidth < height) {
+            // For very small fills, use a circle
+            tft.fillCircle(x + 2 + fillWidth/2, y + height/2, fillWidth/2, color);
+        } else {
+            // Normal fill with rounded ends
+            tft.fillRoundRect(x + 2, y + 2, fillWidth, height - 4, (height - 4)/2, color);
+        }
+    }
+}
+
+void DisplayManager::drawWatchFace() {
+    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    uint16_t faceColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    uint16_t accentColor = (currentTheme == 0) ? DARK_PRIMARY : LIGHT_PRIMARY;
+    
+    // Draw outer circle
+    tft.drawCircle(CENTER_X, CENTER_Y, WATCHFACE_RADIUS, faceColor);
+    tft.drawCircle(CENTER_X, CENTER_Y, WATCHFACE_RADIUS - 1, faceColor); // Double thickness
+    
+    // Draw hour markers
+    for (int i = 0; i < 12; i++) {
+        float angle = i * 30 * PI / 180;
+        int x1 = CENTER_X + (WATCHFACE_RADIUS - 10) * cos(angle - PI/2);
+        int y1 = CENTER_Y + (WATCHFACE_RADIUS - 10) * sin(angle - PI/2);
+        int x2 = CENTER_X + WATCHFACE_RADIUS * cos(angle - PI/2);
+        int y2 = CENTER_Y + WATCHFACE_RADIUS * sin(angle - PI/2);
+        
+        // Draw thicker markers for 12, 3, 6, 9
+        if (i % 3 == 0) {
+            tft.drawLine(x1, y1, x2, y2, accentColor);
+            tft.drawLine(x1+1, y1, x2+1, y2, accentColor); // Thicker line
+        } else {
+            tft.drawLine(x1, y1, x2, y2, faceColor);
+        }
+    }
+    
+    // Draw minute markers
+    for (int i = 0; i < 60; i++) {
+        if (i % 5 != 0) { // Skip hour markers
+            float angle = i * 6 * PI / 180;
+            int x1 = CENTER_X + (WATCHFACE_RADIUS - 5) * cos(angle - PI/2);
+            int y1 = CENTER_Y + (WATCHFACE_RADIUS - 5) * sin(angle - PI/2);
+            int x2 = CENTER_X + WATCHFACE_RADIUS * cos(angle - PI/2);
+            int y2 = CENTER_Y + WATCHFACE_RADIUS * sin(angle - PI/2);
+            
+            tft.drawLine(x1, y1, x2, y2, faceColor);
+        }
+    }
+    
+    // Draw center dot
+    tft.fillCircle(CENTER_X, CENTER_Y, 4, accentColor);
+    tft.fillCircle(CENTER_X, CENTER_Y, 2, faceColor);
+}
+
+// --- Optimized Drawing Functions ---
+
+void DisplayManager::drawStringOptimized(const String& text, int x, int y, const GFXfont* fontPtr, 
+                                        uint16_t textColor, uint16_t bgColor, uint8_t datum, 
+                                        String& lastText, int clearWidth, int clearHeight) {
+    // Check if text actually changed or if a full redraw is forced
+    if (text == lastText && !needsRedrawCurrentScreen) {
+        return; // Nothing to draw
+    }
+
+    // Set font and color
+    tft.setFont(fontPtr);
+    tft.setTextColor(textColor);
+
+    // Get bounds of the new text
+    int16_t x1_new = 0, y1_new = 0;
+    uint16_t w_new = 0, h_new = 0;
+    if (!text.isEmpty()) {
+       tft.getTextBounds(text, 0, 0, &x1_new, &y1_new, &w_new, &h_new);
+    } else {
+        // If new text is empty, use defaults for clearing
+        if (clearWidth < 0) clearWidth = 30;
+        if (clearHeight < 0) clearHeight = (fontPtr ? 20 : 8) + 4;
+    }
+
+    // If clearWidth/Height not provided, use new text bounds + padding
+    if (clearWidth < 0) clearWidth = w_new + 4;
+    if (clearHeight < 0) clearHeight = h_new + 4;
+
+    // Calculate clear area and cursor position based on datum
+    int clearX = x, clearY = y, cursorX = x, cursorY = y;
+    
+    // Horizontal alignment
+    switch (datum) {
+        case TC_DATUM:
+        case MC_DATUM:
+        case BC_DATUM:
+            clearX = x - clearWidth / 2;
+            cursorX = x - w_new / 2 - x1_new;
+            break;
+        case TR_DATUM:
+        case MR_DATUM:
+        case BR_DATUM:
+            clearX = x - clearWidth;
+            cursorX = x - w_new - x1_new;
+            break;
+    }
+
+    // Vertical alignment
+    switch (datum) {
+        case ML_DATUM:
+        case MC_DATUM:
+        case MR_DATUM:
+            clearY = y - clearHeight / 2;
+            cursorY = y - h_new / 2 - y1_new;
+            break;
+        case BL_DATUM:
+        case BC_DATUM:
+        case BR_DATUM:
+            clearY = y - clearHeight;
+            cursorY = y - h_new - y1_new;
+            break;
+    }
+
+    // Perform the clear operation
+    tft.fillRect(clearX, clearY, clearWidth, clearHeight, bgColor);
+
+    // Draw the new text
+    if (!text.isEmpty()) {
+        tft.setCursor(cursorX, cursorY);
+        tft.print(text);
+    }
+
+    // Update the last text variable
+    lastText = text;
+}
+
+void DisplayManager::drawFloatOptimized(float value, int decimalPlaces, const String& unit, 
+                                       int x, int y, const GFXfont* fontPtr, 
+                                       uint16_t textColor, uint16_t bgColor, uint8_t datum, 
+                                       float& lastValue, const char* format, 
+                                       int clearWidth, int clearHeight) {
+    // Determine if value changed significantly or became/stopped being NAN
+    bool valueChanged = false;
+    bool currentIsNan = isnan(value);
+    bool lastIsNan = isnan(lastValue);
+    float epsilon = pow(10, -decimalPlaces - 1);
+
+    if (currentIsNan != lastIsNan) {
+        valueChanged = true;
+    } else if (!currentIsNan && (abs(value - lastValue) > epsilon)) {
+        valueChanged = true;
+    }
+
+    if (!valueChanged && !needsRedrawCurrentScreen) {
+        return; // No significant change
+    }
+
+    // Format the current value string
+    char currentValStr[20];
+    if (currentIsNan) {
+        strcpy(currentValStr, "--");
+    } else {
+        if (format) {
+            snprintf(currentValStr, sizeof(currentValStr), format, value);
+        } else {
+            dtostrf(value, 0, decimalPlaces, currentValStr);
+        }
+    }
+    String currentText = String(currentValStr) + unit;
+
+    // Format the last value string
+    String lastText = "--" + unit;
+    if (!lastIsNan) {
+         char lastValStr[20];
+         if (format) snprintf(lastValStr, sizeof(lastValStr), format, lastValue);
+         else dtostrf(lastValue, 0, decimalPlaces, lastValStr);
+         lastText = String(lastValStr) + unit;
+    }
+
+    // Call the optimized string drawing function
+    drawStringOptimized(currentText, x, y, fontPtr, textColor, bgColor, datum, lastText, clearWidth, clearHeight);
+
+    // Update the last float value
+    lastValue = value;
+}
+
+void DisplayManager::drawIntOptimized(int value, const String& unit, int x, int y, 
+                                     const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, 
+                                     uint8_t datum, int& lastValue, const char* defaultText, 
+                                     int clearWidth, int clearHeight, int validThreshold) {
+    // Check if value changed or full redraw needed
+    if (value == lastValue && !needsRedrawCurrentScreen) {
+        return;
+    }
+
+    // Format current and last strings
+    String currentText;
+    if (value >= validThreshold) {
+        currentText = String(value) + unit;
+    } else {
+        currentText = String(defaultText) + unit;
+    }
+
+    String lastText;
+    if (lastValue >= validThreshold) {
+        lastText = String(lastValue) + unit;
+    } else {
+        lastText = String(defaultText) + unit;
+    }
+
+    // Call the optimized string drawing function
+    drawStringOptimized(currentText, x, y, fontPtr, textColor, bgColor, datum, lastText, clearWidth, clearHeight);
+
+    // Update the last integer value
+    lastValue = value;
+}
+
+// --- Control Functions ---
+void DisplayManager::toggleScreen() {
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        screenOn = !screenOn;
+        tft.enableDisplay(screenOn);
+        if (TFT_BL >= 0) {
+            digitalWrite(TFT_BL, screenOn ? TFT_BACKLIGHT_ON : !TFT_BACKLIGHT_ON);
+        }
+        if (screenOn) {
+            needsRedrawCurrentScreen = true;
+            startAnimation(ANIM_FADE_IN);
+        }
+        xSemaphoreGive(dataMutex);
+        Serial.print("Screen toggled: "); Serial.println(screenOn ? "ON" : "OFF");
+    }
+}
+
+void DisplayManager::switchDisplayMode() {
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        // Determine animation direction based on current and next mode
+        ScreenMode nextMode = (ScreenMode)(((int)currentScreenMode + 1) % SCREEN_MODE_COUNT);
+        
+        // Start appropriate animation
+        startAnimation(ANIM_SLIDE_LEFT);
+        
+        // Update mode
+        currentScreenMode = nextMode;
+        needsRedrawCurrentScreen = true;
+        
+        Serial.print("Switched display mode to: "); Serial.println((int)currentScreenMode);
+        xSemaphoreGive(dataMutex);
+    }
+}
+
+void DisplayManager::toggleTheme() {
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        currentTheme = 1 - currentTheme;
+        if (needsRedrawCurrentScreen  == pdTRUE) {
+            currentTheme = 1 - currentTheme;
+            needsRedrawCurrentScreen = true;
+            startAnimation(ANIM_FADE_IN);
+            Serial.print("Switched theme to: "); Serial.println(currentTheme == 0 ? "Dark" : "Light");
+            xSemaphoreGive(dataMutex);
+        }
+    }
+}
+
+bool DisplayManager::isScreenOn() const {
+    bool isOn = false;
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        isOn = screenOn;
+        xSemaphoreGive(dataMutex);
+    }
+    return isOn;
+}
+
+// Helper function to calculate cursor position based on datum
 void calculateCursorPos(int x, int y, uint8_t datum,
-                        int16_t text_x_offset, int16_t text_y_offset, // From getTextBounds x1, y1
-                        uint16_t text_w, uint16_t text_h,            // From getTextBounds w, h
+                        int16_t text_x_offset, int16_t text_y_offset,
+                        uint16_t text_w, uint16_t text_h,
                         int& cursorX, int& cursorY)
 {
     cursorX = x; // Default: Top-Left alignment
@@ -115,1013 +1167,23 @@ void calculateCursorPos(int x, int y, uint8_t datum,
             break;
     }
 
-    // Vertical alignment (Approximate for Adafruit GFX)
-    // Adafruit's y position for setCursor refers to the top-left corner.
-    // text_y_offset (y1) is the offset from the cursor Y to the top pixel of the glyph.
-    // text_h is the total height.
-    cursorY = y; // Default: Top alignment
-
+    // Vertical alignment
     switch (datum) {
         case ML_DATUM:
         case MC_DATUM:
         case MR_DATUM:
-            // Try to center vertically. Baseline/descender makes this tricky.
-            // A common approximation is aligning the middle of the bounding box.
             cursorY = y - text_h / 2 - text_y_offset;
             break;
         case BL_DATUM:
         case BC_DATUM:
         case BR_DATUM:
-            // Align bottom.
             cursorY = y - text_h - text_y_offset;
             break;
-    }
-     // Prevent cursor going off-screen top/left
-     if (cursorX < 0) cursorX = 0;
-     if (cursorY < 0) cursorY = 0;
-}
-
-void DisplayManager::drawStringOptimized(const String& text, int x, int y, const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, uint8_t datum,
-                                         String& lastText, int clearWidth, int clearHeight) {
-    // Check if text actually changed or if a full redraw is forced
-    if (text == lastText && !needsRedrawCurrentScreen) {
-        return; // Nothing to draw
+        default:
+            cursorY = y - text_y_offset; // Top alignment
     }
 
-    // --- Text Drawing Logic ---
-    tft.setFont(fontPtr);
-    tft.setTextColor(textColor); // Adafruit uses foreground color only for print
-
-    // --- Erasing Logic ---
-    // Get bounds of the *previous* text to determine clear area
-    // Note: This requires setting the font temporarily if it changed, which is complex.
-    // A simpler approach: Use provided clearWidth/Height or estimate based on *new* text.
-    int16_t x1_new = 0, y1_new = 0;
-    uint16_t w_new = 0, h_new = 0;
-    if (!text.isEmpty()) {
-       tft.getTextBounds(text, 0, 0, &x1_new, &y1_new, &w_new, &h_new); // Use 0,0 temporarily
-    } else {
-        // If new text is empty, use last known dimensions or defaults for clearing
-        if (clearWidth < 0) clearWidth = 30; // Default clear size
-        if (clearHeight < 0) clearHeight = (fontPtr ? fontPtr->yAdvance : 8) + 4;
-    }
-
-    // If clearWidth/Height not provided, use new text bounds + padding
-    if (clearWidth < 0) clearWidth = w_new + 4; // Add padding
-    if (clearHeight < 0) clearHeight = h_new + 4; // Add padding
-
-    // Calculate clear area top-left corner based on datum
-    // (Using the same logic as cursor calculation but for the clear rectangle)
-    int clearX = 0, clearY = 0;
-    // We need the bounds of the *last* text for perfect clearing.
-    // Approximate using the *new* text bounds or fixed clearWidth/Height.
-    calculateCursorPos(x, y, datum, 0, 0, clearWidth, clearHeight, clearX, clearY);
-
-    // Perform the clear operation
-    tft.fillRect(clearX, clearY, clearWidth, clearHeight, bgColor);
-
-    // --- Drawing New Text ---
-    if (!text.isEmpty()) {
-        int cursorX = 0, cursorY = 0;
-        // Calculate the actual cursor position for the new text based on datum
-        calculateCursorPos(x, y, datum, x1_new, y1_new, w_new, h_new, cursorX, cursorY);
-
-        // Set cursor and print
-        tft.setCursor(cursorX, cursorY);
-        tft.print(text);
-    }
-
-    // Update the last text variable
-    lastText = text;
-}
-
-void DisplayManager::drawFloatOptimized(float value, int decimalPlaces, const String& unit, int x, int y, const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, uint8_t datum,
-                                        float& lastValue, const char* format, int clearWidth, int clearHeight) {
-    // Determine if value changed significantly or became/stopped being NAN
-    bool valueChanged = false;
-    bool currentIsNan = isnan(value);
-    bool lastIsNan = isnan(lastValue);
-    float epsilon = pow(10, -decimalPlaces - 1); // Small value for float comparison
-
-    if (currentIsNan != lastIsNan) {
-        valueChanged = true;
-    } else if (!currentIsNan && (abs(value - lastValue) > epsilon)) {
-        valueChanged = true;
-    }
-
-    if (!valueChanged && !needsRedrawCurrentScreen) {
-        return; // No significant change
-    }
-
-    // Format the current value string
-    char currentValStr[20]; // Increased buffer size
-    if (currentIsNan) {
-        strcpy(currentValStr, "--"); // Display "--" for NAN
-    } else {
-        if (format) {
-            snprintf(currentValStr, sizeof(currentValStr), format, value);
-        } else {
-            dtostrf(value, 0, decimalPlaces, currentValStr);
-        }
-    }
-    String currentText = String(currentValStr) + unit;
-
-    // Format the last value string (for calculating clear area if needed, although drawStringOptimized approximates)
-    String lastText = "--" + unit; // Default last text assumes NAN or initial state
-    if (!lastIsNan) {
-         char lastValStr[20];
-         if (format) snprintf(lastValStr, sizeof(lastValStr), format, lastValue);
-         else dtostrf(lastValue, 0, decimalPlaces, lastValStr);
-         lastText = String(lastValStr) + unit;
-    }
-
-    // Call the optimized string drawing function
-    // Pass the *lastText* string primarily for context, the function will calculate clear area.
-    drawStringOptimized(currentText, x, y, fontPtr, textColor, bgColor, datum, lastText, clearWidth, clearHeight);
-
-    // Update the last float value only after drawing
-    lastValue = value;
-}
-
-void DisplayManager::drawIntOptimized(int value, const String& unit, int x, int y, const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, uint8_t datum,
-                                      int& lastValue, const char* defaultText, int clearWidth, int clearHeight, int validThreshold) {
-
-    // Check if value changed or full redraw needed
-    if (value == lastValue && !needsRedrawCurrentScreen) {
-        return;
-    }
-
-    // Format current and last strings
-    String currentText;
-    if (value >= validThreshold) {
-        currentText = String(value) + unit;
-    } else {
-        currentText = String(defaultText) + unit; // Use default text if below threshold
-    }
-
-    String lastText;
-    if (lastValue >= validThreshold) {
-        lastText = String(lastValue) + unit;
-    } else {
-        lastText = String(defaultText) + unit;
-    }
-
-    // Call the optimized string drawing function
-    // Pass the *lastText* string for context.
-    drawStringOptimized(currentText, x, y, fontPtr, textColor, bgColor, datum, lastText, clearWidth, clearHeight);
-
-    // Update the last integer value only after drawing
-    lastValue = value;
-}
-
-// --- begin() - Modified for orientation support ---
-bool DisplayManager::begin(uint8_t orientation) {
-    Serial.println("Initializing Display Manager (Adafruit ST7789)...");
-
-    // Set orientation
-    displayOrientation = orientation;
-
-    // --- Initialize Backlight ---
-    if (TFT_BL >= 0) {
-        Serial.printf("Initializing Backlight pin %d\n", TFT_BL);
-        pinMode(TFT_BL, OUTPUT);
-        digitalWrite(TFT_BL, TFT_BACKLIGHT_ON); // Turn backlight on
-    } else {
-        Serial.println("Backlight pin not defined.");
-    }
-
-    // --- Initialize TFT ---
-    // For landscape mode, we swap width and height in initialization
-    if (displayOrientation == ORIENTATION_LANDSCAPE) {
-        tft.init(SCREEN_HEIGHT, SCREEN_WIDTH); // Swap dimensions for landscape
-        Serial.println("TFT initialized in landscape mode");
-    } else {
-        tft.init(SCREEN_WIDTH, SCREEN_HEIGHT); // Original portrait dimensions
-        Serial.println("TFT initialized in portrait mode");
-    }
-
-    // Set rotation based on orientation
-    // ST7789 rotation: 0=portrait, 1=landscape(CW), 2=portrait(180°), 3=landscape(CCW)
-    tft.setRotation(displayOrientation == ORIENTATION_LANDSCAPE ? 1 : 0);
-    tft.fillScreen(DARK_BACKGROUND); // Initial clear with default theme bg
-
-    // Optional: Invert display if colors are wrong
-    // tft.invertDisplay(true);
-
-    Serial.println("Calculating Watch Face UI points...");
-    // --- Watch Face Point Calculation (Updated for landscape) ---
-    int clockCenterX = displayOrientation == ORIENTATION_LANDSCAPE ? CLOCK_CENTER_X : CENTER_X;
-    int clockCenterY = displayOrientation == ORIENTATION_LANDSCAPE ? CLOCK_CENTER_Y : CENTER_Y;
-    int clockRadius = displayOrientation == ORIENTATION_LANDSCAPE ? 
-                     min(CLOCK_CENTER_Y, SCREEN_HEIGHT - CLOCK_CENTER_Y) - 10 : 
-                     WATCHFACE_RADIUS;
-    
-    for (int i = 0; i < NUM_POINTS; i++) {
-        float angleRad = radians(i - 90);
-        x[i]  = (clockRadius * cos(angleRad)) + clockCenterX;
-        y[i]  = (clockRadius * sin(angleRad)) + clockCenterY;
-        float outerRadius = clockRadius + 8;
-        float innerRadius = clockRadius + 2;
-        px[i] = (outerRadius * cos(angleRad)) + clockCenterX;
-        py[i] = (outerRadius * sin(angleRad)) + clockCenterY;
-        lx[i] = (innerRadius * cos(angleRad)) + clockCenterX;
-        ly[i] = (innerRadius * sin(angleRad)) + clockCenterY;
-        if (i % 30 == 0) startHour[i / 30] = i;
-        if (i % 6 == 0) startMinute[i / 6] = i;
-    }
-    Serial.println("Display Manager Initialized.");
-    return true;
-}
-
-// --- Set Orientation Method (New) ---
-void DisplayManager::setOrientation(uint8_t orientation) {
-    if (orientation == displayOrientation) return; // No change needed
-    
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        displayOrientation = orientation;
-        
-        // Set the display rotation
-        tft.setRotation(displayOrientation == ORIENTATION_LANDSCAPE ? 1 : 0);
-        
-        // Force a complete redraw
-        needsRedrawCurrentScreen = true;
-        
-        // Recalculate watch face points
-        int clockCenterX = displayOrientation == ORIENTATION_LANDSCAPE ? CLOCK_CENTER_X : CENTER_X;
-        int clockCenterY = displayOrientation == ORIENTATION_LANDSCAPE ? CLOCK_CENTER_Y : CENTER_Y;
-        int clockRadius = displayOrientation == ORIENTATION_LANDSCAPE ? 
-                         min(CLOCK_CENTER_Y, SCREEN_HEIGHT - CLOCK_CENTER_Y) - 10 : 
-                         WATCHFACE_RADIUS;
-        
-        for (int i = 0; i < NUM_POINTS; i++) {
-            float angleRad = radians(i - 90);
-            x[i]  = (clockRadius * cos(angleRad)) + clockCenterX;
-            y[i]  = (clockRadius * sin(angleRad)) + clockCenterY;
-            float outerRadius = clockRadius + 8;
-            float innerRadius = clockRadius + 2;
-            px[i] = (outerRadius * cos(angleRad)) + clockCenterX;
-            py[i] = (outerRadius * sin(angleRad)) + clockCenterY;
-            lx[i] = (innerRadius * cos(angleRad)) + clockCenterX;
-            ly[i] = (innerRadius * sin(angleRad)) + clockCenterY;
-        }
-        
-        xSemaphoreGive(dataMutex);
-        Serial.print("Display orientation changed to: ");
-        Serial.println(displayOrientation == ORIENTATION_LANDSCAPE ? "Landscape" : "Portrait");
-    }
-}
-
-// --- Get Orientation Method (New) ---
-uint8_t DisplayManager::getOrientation() const {
-    return displayOrientation;
-}
-
-// --- Helper Methods for Orientation (New) ---
-void DisplayManager::getAdjustedCoordinates(int& x, int& y) {
-    // This function adjusts coordinates based on current orientation
-    // For now, it's a placeholder - implement as needed for specific UI elements
-    if (displayOrientation == ORIENTATION_LANDSCAPE) {
-        // Apply any landscape-specific adjustments if needed
-    }
-    // No adjustment needed for portrait mode (original coordinates)
-}
-
-int DisplayManager::getScreenWidth() const {
-    return displayOrientation == ORIENTATION_LANDSCAPE ? SCREEN_WIDTH : SCREEN_HEIGHT;
-}
-
-int DisplayManager::getScreenHeight() const {
-    return displayOrientation == ORIENTATION_LANDSCAPE ? SCREEN_HEIGHT : SCREEN_WIDTH;
-}
-
-// --- Task Management (Unchanged) ---
-void DisplayManager::startTask(UBaseType_t priority) {
-    xTaskCreate(taskFunction, "DisplayTask", 4096, this, priority, &taskHandle);
-    if (taskHandle == NULL) Serial.println("CRITICAL: Error creating Display Task!");
-    else Serial.println("Display Task started.");
-}
-
-void DisplayManager::stopTask() {
-    if (taskHandle != NULL) {
-        TaskHandle_t tempHandle = taskHandle; taskHandle = NULL;
-        tft.enableDisplay(false); // Use Adafruit function to turn display off
-        if (TFT_BL >= 0) digitalWrite(TFT_BL, !TFT_BACKLIGHT_ON); // Turn backlight off
-        vTaskDelete(tempHandle);
-        Serial.println("Display task stopped.");
-    }
-}
-
-void DisplayManager::taskFunction(void* pvParameters) {
-    DisplayManager* instance = static_cast<DisplayManager*>(pvParameters);
-    if (instance == nullptr) { vTaskDelete(NULL); return; }
-    Serial.println("Display Task running...");
-    while (true) {
-        instance->updateDisplay();
-        vTaskDelay(pdMS_TO_TICKS(100)); // Update rate (10Hz)
-    }
-}
-
-// --- Data Update (Unchanged) ---
-void DisplayManager::updateData(bool wifiConnected,
-                                int stepCount, float distance,
-                                int heartRate, int spo2,
-                                float temperature, float pressure,
-                                float ax, float ay, float az,
-                                float gx, float gy, float gz,
-                                const struct tm* timeinfo, bool timeInitialized) {
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        wifiConnectedLocal = wifiConnected;
-        timeInitializedLocal = timeInitialized;
-        if (timeInitialized && timeinfo != nullptr) timeinfoLocal = *timeinfo;
-        else memset(&timeinfoLocal, 0, sizeof(timeinfoLocal)); // Clear local time if not valid
-        stepCountLocal = stepCount; distanceLocal = distance;
-        heartRateLocal = heartRate; spo2Local = spo2;
-        temperatureLocal = temperature; pressureLocal = pressure;
-        axLocal = ax; ayLocal = ay; azLocal = az;
-        gxLocal = gx; gyLocal = gy; gzLocal = gz;
-        xSemaphoreGive(dataMutex);
-    } else { Serial.println("Timeout taking display data mutex in updateData!"); }
-}
-
-// --- Main Update Loop (Unchanged) ---
-void DisplayManager::updateDisplay() {
-    bool localScreenOn = false;
-    ScreenMode localScreenMode;
-    bool needsRedraw = false;
-
-    // Safely get current state
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        localScreenOn = screenOn;
-        localScreenMode = currentScreenMode;
-        needsRedraw = needsRedrawCurrentScreen;
-        if (needsRedraw) needsRedrawCurrentScreen = false; // Reset redraw flag
-        xSemaphoreGive(dataMutex);
-    } else {
-        // Could not get mutex, skip this update cycle
-        return;
-    }
-
-    // If screen is off, do nothing
-    if (!localScreenOn) return;
-
-    // If a full redraw is needed (mode changed, screen toggled on), reset optimization variables
-    if (needsRedraw) {
-        clearScreen(); // Clear the entire screen
-        // Reset all "last..." variables to force redrawing elements
-        lastTimeString = ""; lastDateStringWF = ""; lastDayStringWF = ""; lastSecondAngleWF = -1;
-        lastDisplayedSteps = -1; lastDisplayedHR = -1; lastDisplayedSpO2 = -1000;
-        lastDateStringSens = ""; lastTempEnv = NAN; lastPresEnv = NAN; lastTimeEnv = "";
-        lastAxIMU = lastAyIMU = lastAzIMU = lastGxIMU = lastGyIMU = lastGzIMU = NAN;
-        lastWifiState = !wifiConnectedLocal; // Force redraw if state differs
-    }
-
-    // Call the drawing function for the current mode
-    switch (localScreenMode) {
-        case SCREEN_MODE_WATCHFACE:     drawWatchFaceScreen(needsRedraw); break;
-        case SCREEN_MODE_SENSORS_PRIMARY: drawSensorPrimaryScreen(needsRedraw); break;
-        case SCREEN_MODE_ENVIRONMENT:   drawEnvironmentScreen(needsRedraw); break;
-        case SCREEN_MODE_IMU_DATA:      drawImuDataScreen(needsRedraw); break;
-        default: break; // Unknown mode
-    }
-}
-
-// --- Screen Drawing Functions (Modified for Landscape) ---
-
-void DisplayManager::drawWatchFaceScreen(bool redrawStatic) {
-    struct tm localTimeCopy;
-    bool isTimeValid = false;
-    bool localWifiConnected = false;
-
-    // Safely get data
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        isTimeValid = timeInitializedLocal;
-        if (isTimeValid) localTimeCopy = timeinfoLocal;
-        localWifiConnected = wifiConnectedLocal;
-        xSemaphoreGive(dataMutex);
-    } else { return; } // Skip if data unavailable
-
-    // Draw static elements if needed
-    if (redrawStatic) {
-        drawClockFace();
-        // Reset optimization vars for this screen
-        lastTimeString = ""; lastDateStringWF = ""; lastDayStringWF = "";
-        lastSecondAngleWF = -1; lastWifiState = !localWifiConnected;
-    }
-
-    // Handle invalid time display
-    if (!isTimeValid) {
-        if (lastTimeString != "WaitingWF") { // Draw only if message changed
-            uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
-            uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-            
-            // Adjust position for landscape mode
-            int centerX = displayOrientation == ORIENTATION_LANDSCAPE ? CLOCK_CENTER_X : CENTER_X;
-            int centerY = displayOrientation == ORIENTATION_LANDSCAPE ? CLOCK_CENTER_Y : CENTER_Y;
-            
-            // Use optimized drawing function
-            drawStringOptimized("Waiting for", centerX, centerY - 10, FONT_SMALL, textColor, bgColor, MC_DATUM, lastTimeString, 100); // Placeholder for lastText
-            // Need to draw the second line separately or combine them
-            String dummyLast = ""; // Need a dummy last text for the second line draw
-            drawStringOptimized("Time Sync...", centerX, centerY + 10, FONT_SMALL, textColor, bgColor, MC_DATUM, dummyLast, 100);
-            lastTimeString = "WaitingWF"; // Set the combined state marker
-
-            lastSecondAngleWF = -1; lastDateStringWF = ""; lastDayStringWF = ""; // Reset other related vars
-        }
-        return; // Don't draw time elements if time is invalid
-    }
-     // If we were waiting, force redraw of dynamic elements
-    if (lastTimeString == "WaitingWF") {
-         redrawStatic = true; // Force update of time/date elements
-         lastTimeString = ""; lastDateStringWF = ""; lastDayStringWF = ""; lastSecondAngleWF = -1; // Clear wait state
-    }
-
-    // Get current time/date strings
-    int angle = localTimeCopy.tm_sec * 6; // Angle for second hand/marker
-    char timeStr[12]; sprintf(timeStr, "%02d:%02d:%02d", localTimeCopy.tm_hour, localTimeCopy.tm_min, localTimeCopy.tm_sec);
-    String currentTime = String(timeStr);
-    String currentDay = daysOfWeek[localTimeCopy.tm_wday];
-    char monthStr[4]; strftime(monthStr, sizeof(monthStr), "%b", &localTimeCopy); // Get abbreviated month
-    String currentFullDateStr = String(daysOfWeekShort[localTimeCopy.tm_wday]) + " " + String(localTimeCopy.tm_mday) + " " + String(monthStr);
-
-    // Check what changed
-    bool timeChanged = (currentTime != lastTimeString);
-    bool dayChanged = (currentDay != lastDayStringWF); // May not be needed if date string includes day
-    bool dateChanged = (currentFullDateStr != lastDateStringWF);
-    bool angleChanged = (angle != lastSecondAngleWF);
-    bool wifiChanged = (localWifiConnected != lastWifiState);
-
-    // Update dynamic elements
-    if (angleChanged || timeChanged || redrawStatic) { // Update time display and second hand/marker
-        updateWatchFaceTimeDisplay(angle, currentDay, currentTime);
-    }
-    if (dateChanged || redrawStatic) { // Update date display
-        updateWatchFaceDateDisplay(currentFullDateStr);
-    }
-    if (wifiChanged || redrawStatic) { // Update WiFi icon
-        drawWifiIcon(); // This function internally updates lastWifiState
-    }
-
-    // Update "last" state variables for next cycle
-    lastTimeString = currentTime;
-    lastDayStringWF = currentDay; // If used
-    lastDateStringWF = currentFullDateStr;
-    lastSecondAngleWF = angle;
-    // lastWifiState is updated within drawWifiIcon()
-    
-    // In landscape mode, draw additional data panel on the right side
-    if (displayOrientation == ORIENTATION_LANDSCAPE) {
-        drawSensorDataPanel(redrawStatic);
-    }
-}
-
-// --- New method for landscape mode data panel ---
-void DisplayManager::drawSensorDataPanel(bool redrawStatic) {
-    int localSteps = 0;
-    int localHR = 0;
-    int localSpO2 = -999;
-    float localTemp = NAN;
-
-    // Safely get data
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        localSteps = stepCountLocal;
-        localHR = heartRateLocal;
-        localSpO2 = spo2Local;
-        localTemp = temperatureLocal;
-        xSemaphoreGive(dataMutex);
-    } else { return; }
-
-    // Define colors based on theme
-    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
-    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-    uint16_t stepsColor = COLOR_STEPS;
-    uint16_t hrColor = COLOR_HR;
-    uint16_t spo2Color = COLOR_SPO2;
-    uint16_t tempColor = COLOR_TEMP;
-
-    // Define layout for data panel
-    int panelX = DATA_PANEL_X;
-    int panelY = 20;
-    int lineHeight = 25;
-    int labelX = panelX;
-    int valueX = panelX + DATA_PANEL_WIDTH - 10;
-
-    // Draw panel background if needed
-    if (redrawStatic) {
-        tft.fillRect(panelX - 10, 0, SCREEN_WIDTH - panelX + 10, SCREEN_HEIGHT, bgColor);
-        // Optional: Draw a separator line
-        tft.drawLine(panelX - 10, 0, panelX - 10, SCREEN_HEIGHT, textColor);
-    }
-
-    // Draw data items
-    // 1. Steps
-    String dummy = "";
-    drawStringOptimized("Steps:", labelX, panelY, FONT_SMALL, stepsColor, bgColor, TL_DATUM, dummy);
-    drawIntOptimized(localSteps, "", valueX, panelY, FONT_SMALL, textColor, bgColor, TR_DATUM, lastDisplayedSteps, "--", 80);
-    
-    // 2. Heart Rate
-    panelY += lineHeight;
-    drawStringOptimized("HR:", labelX, panelY, FONT_SMALL, hrColor, bgColor, TL_DATUM, dummy);
-    drawIntOptimized(localHR, " BPM", valueX, panelY, FONT_SMALL, textColor, bgColor, TR_DATUM, lastDisplayedHR, "--", 80);
-    
-    // 3. SpO2
-    panelY += lineHeight;
-    drawStringOptimized("SpO2:", labelX, panelY, FONT_SMALL, spo2Color, bgColor, TL_DATUM, dummy);
-    drawIntOptimized(localSpO2, " %", valueX, panelY, FONT_SMALL, textColor, bgColor, TR_DATUM, lastDisplayedSpO2, "--", 80, -9999);
-    
-    // 4. Temperature
-    panelY += lineHeight;
-    drawStringOptimized("Temp:", labelX, panelY, FONT_SMALL, tempColor, bgColor, TL_DATUM, dummy);
-    drawFloatOptimized(localTemp, 1, " C", valueX, panelY, FONT_SMALL, textColor, bgColor, TR_DATUM, lastTempEnv, "%.1f", 80);
-}
-
-void DisplayManager::drawSensorPrimaryScreen(bool redrawStatic) {
-    struct tm localTimeCopy;
-    bool isTimeValid = false;
-    int localSteps = 0;
-    int localHR = 0;
-    int localSpO2 = -999;
-
-    // Safely get data
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        isTimeValid = timeInitializedLocal;
-        if (isTimeValid) localTimeCopy = timeinfoLocal;
-        localSteps = stepCountLocal;
-        localHR = heartRateLocal;
-        localSpO2 = spo2Local;
-        xSemaphoreGive(dataMutex);
-    } else { return; }
-
-    // Define colors based on theme
-    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
-    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-    uint16_t dateColor = (currentTheme == 0) ? COLOR_DATE : COLOR_DARKGREY; // Specific color for date
-    uint16_t spo2Color = COLOR_SPO2;
-    uint16_t hrColor   = COLOR_HR;
-    uint16_t stepsColor= COLOR_STEPS;
-
-    // Reset optimization vars if full redraw
-    if (redrawStatic) {
-        lastDisplayedSteps = -1; lastDisplayedHR = -1; lastDisplayedSpO2 = -1000;
-        lastDateStringSens = ""; // Reset date/time string for this screen
-    }
-
-    // Define layout constants - adjusted for landscape mode
-    int startX, startY, lineSpacing, labelX, valueX, dataWidth;
-    
-    if (displayOrientation == ORIENTATION_LANDSCAPE) {
-        startX = 20;
-        startY = 30;
-        lineSpacing = 30; // Horizontal spacing between items
-        labelX = startX; // X position for labels (left aligned)
-        valueX = labelX + 60; // X position for values
-        dataWidth = 80; // Width for clearing values
-    } else {
-        // Original portrait layout
-        startY = 30; // Initial Y position
-        lineSpacing = 55; // Spacing between sensor readings
-        labelX = 15; // X position for labels (left aligned)
-        valueX = SCREEN_WIDTH - 15; // X position for values (right aligned)
-        dataWidth = SCREEN_WIDTH - 30; // Max width for clearing values
-    }
-    
-    int valueYOffset = 18; // Offset Y for value text relative to label
-    int labelYOffset = 18; // Offset Y for label text
-
-    if (displayOrientation == ORIENTATION_LANDSCAPE) {
-        // Landscape layout - horizontal arrangement
-        int itemX = startX;
-        
-        // 1. Steps
-        String dummy = "";
-        drawStringOptimized("Steps", itemX, startY, FONT_SMALL, stepsColor, bgColor, TL_DATUM, dummy);
-        drawIntOptimized(localSteps, "", itemX, startY + valueYOffset, FONT_SMALL, textColor, bgColor, TL_DATUM, lastDisplayedSteps, "--", dataWidth);
-        
-        // 2. Heart Rate
-        itemX += lineSpacing * 2;
-        drawStringOptimized("HR", itemX, startY, FONT_SMALL, hrColor, bgColor, TL_DATUM, dummy);
-        drawIntOptimized(localHR, " BPM", itemX, startY + valueYOffset, FONT_SMALL, textColor, bgColor, TL_DATUM, lastDisplayedHR, "--", dataWidth);
-        
-        // 3. SpO2
-        itemX += lineSpacing * 2;
-        drawStringOptimized("SpO2", itemX, startY, FONT_SMALL, spo2Color, bgColor, TL_DATUM, dummy);
-        drawIntOptimized(localSpO2, " %", itemX, startY + valueYOffset, FONT_SMALL, textColor, bgColor, TL_DATUM, lastDisplayedSpO2, "--", dataWidth, -9999);
-        
-        // 4. Time and Date (Bottom)
-        int bottomY = SCREEN_HEIGHT - 20;
-        String currentDateTimeStr;
-        if (isTimeValid) {
-            char dateTimeBuf[20];
-            sprintf(dateTimeBuf, "%02d:%02d | %s %02d", localTimeCopy.tm_hour, localTimeCopy.tm_min, 
-                    daysOfWeekShort[localTimeCopy.tm_wday], localTimeCopy.tm_mday);
-            currentDateTimeStr = String(dateTimeBuf);
-        } else {
-            currentDateTimeStr = "TIME N/A";
-        }
-        drawStringOptimized(currentDateTimeStr, CENTER_X, bottomY, FONT_SMALL, dateColor, bgColor, MC_DATUM, lastDateStringSens, SCREEN_WIDTH);
-    } else {
-        // Original portrait layout - vertical arrangement
-        // 1. Steps
-        drawIntOptimized(localSteps, "", valueX, startY + valueYOffset, FONT_LARGE, textColor, bgColor, TR_DATUM, lastDisplayedSteps, "--", dataWidth);
-        if (redrawStatic || localSteps != lastDisplayedSteps) {
-            String dummy = "";
-            drawStringOptimized("Steps", labelX, startY + labelYOffset, FONT_LARGE, stepsColor, bgColor, TL_DATUM, dummy);
-        }
-
-        // 2. Heart Rate
-        startY += lineSpacing;
-        drawIntOptimized(localHR, " BPM", valueX, startY + valueYOffset, FONT_LARGE, textColor, bgColor, TR_DATUM, lastDisplayedHR, "--", dataWidth);
-        if (redrawStatic || localHR != lastDisplayedHR) {
-            String dummy = "";
-            drawStringOptimized("HR", labelX, startY + labelYOffset, FONT_LARGE, hrColor, bgColor, TL_DATUM, dummy);
-        }
-
-        // 3. SpO2
-        startY += lineSpacing;
-        drawIntOptimized(localSpO2, " %", valueX, startY + valueYOffset, FONT_LARGE, textColor, bgColor, TR_DATUM, lastDisplayedSpO2, "--", dataWidth, -9999);
-        if (redrawStatic || localSpO2 != lastDisplayedSpO2) {
-            String dummy = "";
-            drawStringOptimized("SpO2", labelX, startY + labelYOffset, FONT_LARGE, spo2Color, bgColor, TL_DATUM, dummy);
-        }
-
-        // 4. Time and Date (Bottom, Centered)
-        int bottomY = SCREEN_HEIGHT - 20; // Y position for bottom text
-        String currentDateTimeStr;
-        if (isTimeValid) {
-            char dateTimeBuf[20];
-            sprintf(dateTimeBuf, "%02d:%02d | %s %02d", localTimeCopy.tm_hour, localTimeCopy.tm_min, daysOfWeekShort[localTimeCopy.tm_wday], localTimeCopy.tm_mday);
-            currentDateTimeStr = String(dateTimeBuf);
-        } else {
-            currentDateTimeStr = "TIME N/A";
-        }
-        drawStringOptimized(currentDateTimeStr, CENTER_X, bottomY, FONT_SMALL, dateColor, bgColor, MC_DATUM, lastDateStringSens, SCREEN_WIDTH);
-    }
-}
-
-void DisplayManager::drawEnvironmentScreen(bool redrawStatic) {
-    struct tm localTimeCopy;
-    bool isTimeValid = false;
-    float localTemp = NAN;
-    float localPres = NAN;
-
-    // Safely get data
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        isTimeValid = timeInitializedLocal;
-        if (isTimeValid) localTimeCopy = timeinfoLocal;
-        localTemp = temperatureLocal;
-        localPres = pressureLocal;
-        xSemaphoreGive(dataMutex);
-    } else { return; }
-
-    // Define colors based on theme
-    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
-    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-    uint16_t tempColor = COLOR_TEMP;
-    uint16_t presColor = COLOR_PRESSURE;
-    uint16_t timeColor = textColor; // Use standard text color for time
-
-    // Reset optimization vars if full redraw
-    if (redrawStatic) {
-        lastTempEnv = NAN; lastPresEnv = NAN;
-        lastTimeEnv = ""; // Reset time string for this screen
-    }
-
-    // Define layout constants - adjusted for landscape mode
-    int startY, lineSpacing, labelX, valueX, dataWidth;
-    
-    if (displayOrientation == ORIENTATION_LANDSCAPE) {
-        startY = 40;
-        lineSpacing = 50; // Horizontal spacing in landscape
-        labelX = 30;
-        valueX = SCREEN_WIDTH - 30;
-        dataWidth = 100;
-    } else {
-        // Original portrait layout
-        startY = 50;
-        lineSpacing = 65;
-        labelX = 15;
-        valueX = SCREEN_WIDTH - 15;
-        dataWidth = SCREEN_WIDTH - 30;
-    }
-    
-    int valueYOffset = 18; // Adjust based on font
-    int labelYOffset = 18; // Adjust based on font
-
-    // 1. Temperature
-    drawFloatOptimized(localTemp, 1, " C", valueX, startY + valueYOffset, FONT_LARGE, textColor, bgColor, TR_DATUM, lastTempEnv, "%.1f", dataWidth);
-    if (redrawStatic || localTemp != lastTempEnv) { // Use != for float comparison (handles NAN change)
-        String dummy = "";
-        drawStringOptimized("Temp", labelX, startY + labelYOffset, FONT_LARGE, tempColor, bgColor, TL_DATUM, dummy);
-    }
-
-    // 2. Pressure
-    startY += lineSpacing;
-    float presHpa = isnan(localPres) ? NAN : localPres / 100.0f;
-    float lastPresHpaEnv = isnan(lastPresEnv) ? NAN : lastPresEnv / 100.0f; // Compare in hPa
-    drawFloatOptimized(presHpa, 1, " hPa", valueX, startY + valueYOffset, FONT_LARGE, textColor, bgColor, TR_DATUM, lastPresHpaEnv /* Compare hPa */, "%.1f", dataWidth);
-    if (redrawStatic || localPres != lastPresEnv) { // Use original Pa for change detection
-        String dummy = "";
-        drawStringOptimized("Press", labelX, startY + labelYOffset, FONT_LARGE, presColor, bgColor, TL_DATUM, dummy);
-    }
-    lastPresEnv = localPres; // Update last value in Pa
-
-    // 3. Time (HH:MM) at the bottom
-    int bottomY = SCREEN_HEIGHT - 20;
-    String currentTimeStr;
-    if (isTimeValid) {
-        char timeBuf[6]; sprintf(timeBuf, "%02d:%02d", localTimeCopy.tm_hour, localTimeCopy.tm_min);
-        currentTimeStr = String(timeBuf);
-    } else {
-        currentTimeStr = "--:--";
-    }
-    drawStringOptimized(currentTimeStr, CENTER_X, bottomY, FONT_SMALL, timeColor, bgColor, MC_DATUM, lastTimeEnv, 80); // Clear width 80
-}
-
-void DisplayManager::drawImuDataScreen(bool redrawStatic) {
-    float localAx=NAN, localAy=NAN, localAz=NAN, localGx=NAN, localGy=NAN, localGz=NAN;
-
-    // Safely get data
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        localAx = axLocal; localAy = ayLocal; localAz = azLocal;
-        localGx = gxLocal; localGy = gyLocal; localGz = gzLocal;
-        xSemaphoreGive(dataMutex);
-    } else { return; }
-
-    // Define colors
-    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
-    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-    uint16_t accelColor = COLOR_ACCEL;
-    uint16_t gyroColor = COLOR_GYRO;
-
-    // Reset optimization vars if full redraw
-    if (redrawStatic) {
-        lastAxIMU = lastAyIMU = lastAzIMU = lastGxIMU = lastGyIMU = lastGzIMU = NAN;
-    }
-
-    // Define layout constants - adjusted for landscape mode
-    int startY, lineSpacing, labelX, valueX, valueWidth;
-    const GFXfont* imuFont;
-    
-    if (displayOrientation == ORIENTATION_LANDSCAPE) {
-        startY = 15;
-        lineSpacing = 20; // Tighter spacing for landscape
-        labelX = 10;
-        valueX = 15;
-        valueWidth = 100;
-        imuFont = FONT_SMALL; // Use small font for landscape
-    } else {
-        // Original portrait layout
-        startY = 15;
-        lineSpacing = 22;
-        labelX = 10;
-        valueX = 15;
-        valueWidth = SCREEN_WIDTH - valueX - 10;
-        imuFont = FONT_SMALL;
-    }
-    
-    int headerYOffset = 0;
-    int valueYOffset = 0;
-
-    if (displayOrientation == ORIENTATION_LANDSCAPE) {
-        // Landscape layout - two columns side by side
-        int leftColX = 20;
-        int rightColX = SCREEN_WIDTH / 2 + 10;
-        
-        // Left column - Accelerometer
-        String dummy = "";
-        drawStringOptimized("Accel (g)", leftColX, startY + headerYOffset, imuFont, accelColor, bgColor, TL_DATUM, dummy);
-        startY += lineSpacing + 5;
-        
-        drawFloatOptimized(localAx, 2, "", leftColX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastAxIMU, "X: %+.2f", valueWidth);
-        startY += lineSpacing;
-        drawFloatOptimized(localAy, 2, "", leftColX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastAyIMU, "Y: %+.2f", valueWidth);
-        startY += lineSpacing;
-        drawFloatOptimized(localAz, 2, "", leftColX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastAzIMU, "Z: %+.2f", valueWidth);
-        
-        // Right column - Gyroscope
-        startY = 15; // Reset Y position for right column
-        drawStringOptimized("Gyro (dps)", rightColX, startY + headerYOffset, imuFont, gyroColor, bgColor, TL_DATUM, dummy);
-        startY += lineSpacing + 5;
-        
-        drawFloatOptimized(localGx, 1, "", rightColX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastGxIMU, "X: %+.1f", valueWidth);
-        startY += lineSpacing;
-        drawFloatOptimized(localGy, 1, "", rightColX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastGyIMU, "Y: %+.1f", valueWidth);
-        startY += lineSpacing;
-        drawFloatOptimized(localGz, 1, "", rightColX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastGzIMU, "Z: %+.1f", valueWidth);
-    } else {
-        // Original portrait layout - vertical arrangement
-        // --- Accelerometer Section ---
-        if (redrawStatic) {
-            String dummy = "";
-            drawStringOptimized("Accel (g)", labelX, startY + headerYOffset, imuFont, accelColor, bgColor, TL_DATUM, dummy);
-        }
-        startY += lineSpacing + 5; // Extra space after header
-
-        // Accel X, Y, Z (Using specific format strings in drawFloatOptimized)
-        drawFloatOptimized(localAx, 2, "", valueX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastAxIMU, "X: %+.2f", valueWidth);
-        startY += lineSpacing;
-        drawFloatOptimized(localAy, 2, "", valueX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastAyIMU, "Y: %+.2f", valueWidth);
-        startY += lineSpacing;
-        drawFloatOptimized(localAz, 2, "", valueX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastAzIMU, "Z: %+.2f", valueWidth);
-
-        // --- Gyroscope Section ---
-        startY += lineSpacing + 10; // Extra space before next header
-        if (redrawStatic) {
-            String dummy = "";
-            drawStringOptimized("Gyro (dps)", labelX, startY + headerYOffset, imuFont, gyroColor, bgColor, TL_DATUM, dummy);
-        }
-        startY += lineSpacing + 5; // Extra space after header
-
-        // Gyro X, Y, Z
-        drawFloatOptimized(localGx, 1, "", valueX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastGxIMU, "X: %+.1f", valueWidth);
-        startY += lineSpacing;
-        drawFloatOptimized(localGy, 1, "", valueX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastGyIMU, "Y: %+.1f", valueWidth);
-        startY += lineSpacing;
-        drawFloatOptimized(localGz, 1, "", valueX, startY + valueYOffset, imuFont, textColor, bgColor, TL_DATUM, lastGzIMU, "Z: %+.1f", valueWidth);
-    }
-}
-
-// --- Helper Drawing Functions ---
-
-void DisplayManager::clearScreen() {
-    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-    tft.fillScreen(bgColor);
-}
-
-void DisplayManager::drawWifiIcon() {
-    bool localWifiConnected;
-     // Safely get data
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        localWifiConnected = wifiConnectedLocal;
-        xSemaphoreGive(dataMutex);
-    } else { return; }
-
-    // Check if state changed or redraw forced
-    if (localWifiConnected == lastWifiState && !needsRedrawCurrentScreen) {
-        return; // Nothing to do
-    }
-
-    // Adjust position based on orientation
-    int iconX, iconY;
-    if (displayOrientation == ORIENTATION_LANDSCAPE) {
-        iconX = SCREEN_WIDTH - 20;
-        iconY = 5;
-    } else {
-        iconX = SCREEN_WIDTH - 20;
-        iconY = 5;
-    }
-    
-    int iconW = 15;
-    int iconH = 12;
-    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-    uint16_t iconColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
-
-    // Clear the icon area first
-    tft.fillRect(iconX, iconY, iconW, iconH, bgColor);
-
-    if (localWifiConnected) {
-        // Draw a simple WiFi icon (e.g., 3 arcs)
-        tft.drawCircle(iconX + iconW / 2, iconY + iconH, iconW / 2, iconColor);
-        tft.drawCircle(iconX + iconW / 2, iconY + iconH, iconW / 3, iconColor);
-        tft.drawCircle(iconX + iconW / 2, iconY + iconH, iconW / 6, iconColor);
-        // You might need drawPixel for the center dot or adjust drawCircle parameters
-        tft.fillCircle(iconX + iconW / 2, iconY + iconH, 1, iconColor); // Small dot at bottom center
-    }
-
-    lastWifiState = localWifiConnected; // Update the state
-}
-
-void DisplayManager::drawClockFace() {
-    uint16_t faceColor = (currentTheme == 0) ? DARK_LINES : LIGHT_LINES;
-    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-    uint16_t hourColor = (currentTheme == 0) ? DARK_HIGHLIGHT : LIGHT_HIGHLIGHT; // Color for hour markers
-
-    // Determine clock center based on orientation
-    int clockCenterX = displayOrientation == ORIENTATION_LANDSCAPE ? CLOCK_CENTER_X : CENTER_X;
-    int clockCenterY = displayOrientation == ORIENTATION_LANDSCAPE ? CLOCK_CENTER_Y : CENTER_Y;
-
-    // Draw minute/second markers (thin lines)
-    for (int i = 0; i < NUM_POINTS; i += 6) { // Every 6 degrees (60 markers)
-        tft.drawLine(lx[i], ly[i], px[i], py[i], faceColor);
-    }
-
-    // Draw hour markers (thicker lines or different shape)
-    for (int i = 0; i < NUM_POINTS; i += 30) { // Every 30 degrees (12 markers)
-        // Make hour lines slightly thicker by drawing twice
-        tft.drawLine(lx[i], ly[i], px[i], py[i], hourColor);
-    }
-
-    // Draw center dot
-    tft.fillCircle(clockCenterX, clockCenterY, 3, faceColor);
-}
-
-void DisplayManager::updateWatchFaceTimeDisplay(int angle, const String& currentDay, const String& currentTime) {
-    uint16_t textColor = (currentTheme == 0) ? COLOR_TIME_DARK : COLOR_TIME_LIGHT;
-    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-    uint16_t secondColor = (currentTheme == 0) ? DARK_HIGHLIGHT : LIGHT_HIGHLIGHT;
-
-    // Determine clock center based on orientation
-    int clockCenterX = displayOrientation == ORIENTATION_LANDSCAPE ? CLOCK_CENTER_X : CENTER_X;
-    int clockCenterY = displayOrientation == ORIENTATION_LANDSCAPE ? CLOCK_CENTER_Y : CENTER_Y;
-
-    // --- 1. Update Digital Time ---
-    int timeY = clockCenterY - 10; // Adjust Y position
-    // Use the existing lastTimeString variable for optimization
-    drawStringOptimized(currentTime, clockCenterX, timeY, FONT_LARGE, textColor, bgColor, MC_DATUM, lastTimeString, 100, 25);
-
-    // --- 2. Update Day String (Optional, below time) ---
-    int dayY = clockCenterY + 15; // Adjust Y position
-    // Use the existing lastDayStringWF variable for optimization
-    drawStringOptimized(currentDay, clockCenterX, dayY, FONT_SMALL, textColor, bgColor, MC_DATUM, lastDayStringWF, 100, 20);
-
-    // --- 3. Update Second Marker/Hand ---
-    // Erase the previous second hand/marker by drawing it in background color
-    if (lastSecondAngleWF >= 0) {
-        tft.drawLine(clockCenterX, clockCenterY, x[lastSecondAngleWF], y[lastSecondAngleWF], bgColor);
-        tft.drawLine(clockCenterX+1, clockCenterY, x[lastSecondAngleWF]+1, y[lastSecondAngleWF], bgColor); // Thicker erase
-    }
-
-    // Draw the new second hand/marker
-    if (angle >= 0) {
-        tft.drawLine(clockCenterX, clockCenterY, x[angle], y[angle], secondColor);
-        tft.drawLine(clockCenterX+1, clockCenterY, x[angle]+1, y[angle], secondColor); // Thicker draw
-    }
-
-    // Center dot needs redraw if erased by second hand erase
-    uint16_t faceColor = (currentTheme == 0) ? DARK_LINES : LIGHT_LINES;
-    tft.fillCircle(clockCenterX, clockCenterY, 3, faceColor);
-}
-
-void DisplayManager::updateWatchFaceDateDisplay(const String& fullDateStr) {
-    uint16_t dateColor = (currentTheme == 0) ? COLOR_DATE : COLOR_DARKGREY;
-    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-    
-    // Adjust position based on orientation
-    int dateX, dateY;
-    if (displayOrientation == ORIENTATION_LANDSCAPE) {
-        dateX = CLOCK_CENTER_X;
-        dateY = 15;
-    } else {
-        dateX = CENTER_X;
-        dateY = 15;
-    }
-
-    // Use the existing lastDateStringWF variable for optimization
-    drawStringOptimized(fullDateStr, dateX, dateY, FONT_SMALL, dateColor, bgColor, MC_DATUM, lastDateStringWF, 120);
-}
-
-// --- Optimized Drawing Functions (Unchanged) ---
-// These functions remain the same as they already handle positioning based on datum
-
-// --- Control Functions ---
-void DisplayManager::toggleScreen() {
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        screenOn = !screenOn;
-        tft.enableDisplay(screenOn); // Use Adafruit function
-        if (TFT_BL >= 0) {
-            digitalWrite(TFT_BL, screenOn ? TFT_BACKLIGHT_ON : !TFT_BACKLIGHT_ON); // Toggle backlight
-        }
-        if (screenOn) {
-            needsRedrawCurrentScreen = true; // Force redraw when turning screen back on
-        }
-        xSemaphoreGive(dataMutex);
-        Serial.print("Screen toggled: "); Serial.println(screenOn ? "ON" : "OFF");
-    }
-}
-
-void DisplayManager::switchDisplayMode() {
-    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        currentScreenMode = (ScreenMode)(((int)currentScreenMode + 1) % SCREEN_MODE_COUNT);
-        needsRedrawCurrentScreen = true; // Force redraw for the new mode
-        Serial.print("Switched display mode to: "); Serial.println((int)currentScreenMode);
-        xSemaphoreGive(dataMutex);
-    }
-}
-
-void DisplayManager::toggleTheme() {
-     if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        currentTheme = 1 - currentTheme; // Toggle 0 and 1
-        needsRedrawCurrentScreen = true; // Force redraw with new theme colors
-        Serial.print("Switched theme to: "); Serial.println(currentTheme == 0 ? "Dark" : "Light");
-        xSemaphoreGive(dataMutex);
-    }
-}
-
-bool DisplayManager::isScreenOn() const {
-    // Directly return the state variable (no mutex needed for simple read if acceptable)
-    // Or use mutex for guaranteed consistency:
-    bool isOn = false;
-     if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) { // Shorter timeout for read
-         isOn = screenOn;
-         xSemaphoreGive(dataMutex);
-     }
-    return isOn;
-}
-
-// Helper function to get font height (approximates for default font)
-int16_t GFXfont_height(const GFXfont* font) {
-    if (font) {
-        return font->yAdvance;
-    } else {
-        return 8; // Height of default Adafruit font size 1
-    }
+    // Prevent cursor going off-screen
+    if (cursorX < 0) cursorX = 0;
+    if (cursorY < 0) cursorY = 0;
 }
