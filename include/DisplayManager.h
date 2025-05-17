@@ -21,14 +21,16 @@
 #include "Config.h"
 
 // --- DISPLAY DIMENSIONS ---
-#define SCREEN_WIDTH  135
-#define SCREEN_HEIGHT 240
+// Modified for horizontal layout
+#define SCREEN_WIDTH  240  // Swapped from original
+#define SCREEN_HEIGHT 135  // Swapped from original
 #define CENTER_X      (SCREEN_WIDTH / 2)
 #define CENTER_Y      (SCREEN_HEIGHT / 2)
 
 // --- UI CONSTANTS ---
-#define HEADER_HEIGHT       30
-#define FOOTER_HEIGHT       20
+// Adjusted for horizontal layout
+#define HEADER_HEIGHT       20  // Reduced for horizontal layout
+#define FOOTER_HEIGHT       15  // Reduced for horizontal layout
 #define CONTENT_TOP         (HEADER_HEIGHT + 2)
 #define CONTENT_HEIGHT      (SCREEN_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT)
 #define CARD_MARGIN         5
@@ -113,6 +115,9 @@ public:
     // Animation control
     void startAnimation(AnimationType type);
     bool isAnimating() const;
+    
+    // Force a complete redraw of the screen
+    void forceRedraw();
 
 private:
     Adafruit_ST7789 tft;

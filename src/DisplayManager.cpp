@@ -28,7 +28,8 @@
 #define R_BASELINE 11 // Right character baseline
 
 // --- UI Constants ---
-#define WATCHFACE_RADIUS (SCREEN_WIDTH / 2 - 10)
+// Adjusted for horizontal layout
+#define WATCHFACE_RADIUS (SCREEN_HEIGHT / 2 - 15)
 #define NUM_POINTS 360
 
 // --- Static Data Arrays ---
@@ -79,11 +80,27 @@ bool DisplayManager::begin() {
     }
 
     // Initialize TFT
-    tft.init(SCREEN_WIDTH, SCREEN_HEIGHT);
+    tft.init(SCREEN_HEIGHT, SCREEN_WIDTH); // Original dimensions, will be rotated
     Serial.println("TFT initialized");
 
-    tft.setRotation(0);
+    // Set rotation to landscape mode
+    tft.setRotation(1); // 1 for landscape, 3 for landscape flipped
     tft.fillScreen(DARK_BACKGROUND);
+    
+    // Reset all optimization variables to force a full redraw
+    lastTimeString = ""; 
+    lastDateString = ""; 
+    lastDayString = ""; 
+    lastSecondAngle = -1;
+    lastDisplayedSteps = -1; 
+    lastDisplayedHR = -1; 
+    lastDisplayedSpO2 = -1000;
+    lastTempEnv = NAN; 
+    lastPresEnv = NAN; 
+    lastTimeEnv = "";
+    lastAxIMU = lastAyIMU = lastAzIMU = lastGxIMU = lastGyIMU = lastGzIMU = NAN;
+    lastWifiState = false;
+    needsRedrawCurrentScreen = true;
 
     Serial.println("Calculating Watch Face UI points...");
     // Calculate watchface points
@@ -225,6 +242,26 @@ void DisplayManager::applyAnimationEffect(int x, int y, int width, int height) {
     }
 }
 
+// --- Force Redraw ---
+void DisplayManager::forceRedraw() {
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        needsRedrawCurrentScreen = true;
+        lastTimeString = ""; 
+        lastDateString = ""; 
+        lastDayString = ""; 
+        lastSecondAngle = -1;
+        lastDisplayedSteps = -1; 
+        lastDisplayedHR = -1; 
+        lastDisplayedSpO2 = -1000;
+        lastTempEnv = NAN; 
+        lastPresEnv = NAN; 
+        lastTimeEnv = "";
+        lastAxIMU = lastAyIMU = lastAzIMU = lastGxIMU = lastGyIMU = lastGzIMU = NAN;
+        lastWifiState = !wifiConnectedLocal;
+        xSemaphoreGive(dataMutex);
+    }
+}
+
 // --- Main Update Loop ---
 void DisplayManager::updateDisplay() {
     bool localScreenOn = false;
@@ -271,6 +308,7 @@ void DisplayManager::updateDisplay() {
 }
 
 // --- Screen Drawing Functions ---
+// Modified for horizontal layout
 
 void DisplayManager::drawWatchFaceScreen(bool redrawStatic) {
     struct tm localTimeCopy;
@@ -345,21 +383,30 @@ void DisplayManager::drawWatchFaceScreen(bool redrawStatic) {
     bool dateChanged = (currentDate != lastDateString);
     bool angleChanged = (angle != lastSecondAngle);
 
+    // Modified for horizontal layout - move digital time to the right side
+    int watchfaceRightEdge = CENTER_X + WATCHFACE_RADIUS + 10;
+    int digitalInfoX = (SCREEN_WIDTH + watchfaceRightEdge) / 2;
+    
+    // Clear digital info area if needed
+    if (timeChanged || dayChanged || dateChanged || redrawStatic) {
+        tft.fillRect(watchfaceRightEdge, 20, SCREEN_WIDTH - watchfaceRightEdge, SCREEN_HEIGHT - 40, bgColor);
+    }
+    
     // Draw digital time
     if (timeChanged || redrawStatic) {
-        drawStringOptimized(currentTime, CENTER_X, CENTER_Y + 40, FONT_LARGE, 
+        drawStringOptimized(currentTime, digitalInfoX, CENTER_Y - 30, FONT_LARGE, 
                            accentColor, bgColor, MC_DATUM, lastTimeString, 120, 30);
     }
     
     // Draw date
     if (dateChanged || redrawStatic) {
-        drawStringOptimized(currentDate, CENTER_X, CENTER_Y + 70, FONT_SMALL, 
+        drawStringOptimized(currentDate, digitalInfoX, CENTER_Y, FONT_SMALL, 
                            textColor, bgColor, MC_DATUM, lastDateString, 120, 20);
     }
     
     // Draw day of week
     if (dayChanged || redrawStatic) {
-        drawStringOptimized(currentDay, CENTER_X, 20, FONT_SMALL_BOLD, 
+        drawStringOptimized(currentDay, digitalInfoX, CENTER_Y + 25, FONT_SMALL_BOLD, 
                            secondaryColor, bgColor, MC_DATUM, lastDayString, 120, 20);
     }
     
@@ -395,6 +442,9 @@ void DisplayManager::drawWatchFaceScreen(bool redrawStatic) {
         tft.drawLine(CENTER_X+1, CENTER_Y, minuteX+1, minuteY, textColor); // Thicker line
         
         // Draw second hand with accent color
+        tft.drawLine(CENTER_X, CENTER_Y, secondX, secondY, secondaryColor);
+        
+        // Draw center circle
         tft.drawLine(CENTER_X, CENTER_Y, secondX, secondY, secondaryColor);
         
         // Draw center circle
@@ -447,37 +497,47 @@ void DisplayManager::drawDashboardScreen(bool redrawStatic) {
         drawFooter();
     }
     
-    // Draw cards for each metric
-    int cardWidth = SCREEN_WIDTH - 2*CARD_MARGIN;
-    int cardHeight = 45;
+    // Modified for horizontal layout - 2x2 grid of cards
+    int cardWidth = (SCREEN_WIDTH - 3*CARD_MARGIN) / 2;
+    int cardHeight = 50;
     int cardY = HEADER_HEIGHT + CARD_MARGIN;
+    int valueAreaWidth = cardWidth - 20;
     
-    // Steps card
+    // First row
+    // Steps card (left)
     drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Steps", COLOR_STEPS);
+    // Clear value area before drawing new value
+    tft.fillRect(CARD_MARGIN + 10, cardY + 20, valueAreaWidth, 25, cardColor);
     drawIntOptimized(localSteps, "", CARD_MARGIN + cardWidth - 10, cardY + 30, 
                     FONT_LARGE, textColor, cardColor, TR_DATUM, 
-                    lastDisplayedSteps, "--", cardWidth - 20);
+                    lastDisplayedSteps, "--", valueAreaWidth);
     
-    // Heart rate card
-    cardY += cardHeight + CARD_MARGIN;
-    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Heart Rate", COLOR_HEART);
-    drawIntOptimized(localHR, " BPM", CARD_MARGIN + cardWidth - 10, cardY + 30, 
+    // Heart rate card (right)
+    drawCard(CARD_MARGIN*2 + cardWidth, cardY, cardWidth, cardHeight, "Heart Rate", COLOR_HEART);
+    // Clear value area before drawing new value
+    tft.fillRect(CARD_MARGIN*2 + cardWidth + 10, cardY + 20, valueAreaWidth, 25, cardColor);
+    drawIntOptimized(localHR, " BPM", CARD_MARGIN*2 + cardWidth*2 - 10, cardY + 30, 
                     FONT_LARGE, textColor, cardColor, TR_DATUM, 
-                    lastDisplayedHR, "--", cardWidth - 20);
+                    lastDisplayedHR, "--", valueAreaWidth);
     
-    // SpO2 card
+    // Second row
     cardY += cardHeight + CARD_MARGIN;
+    
+    // SpO2 card (left)
     drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "SpO2", COLOR_SPO2);
+    // Clear value area before drawing new value
+    tft.fillRect(CARD_MARGIN + 10, cardY + 20, valueAreaWidth, 25, cardColor);
     drawIntOptimized(localSpO2, "%", CARD_MARGIN + cardWidth - 10, cardY + 30, 
                     FONT_LARGE, textColor, cardColor, TR_DATUM, 
-                    lastDisplayedSpO2, "--", cardWidth - 20);
+                    lastDisplayedSpO2, "--", valueAreaWidth);
     
-    // Temperature card
-    cardY += cardHeight + CARD_MARGIN;
-    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Temperature", COLOR_TEMP);
-    drawFloatOptimized(localTemp, 1, "°C", CARD_MARGIN + cardWidth - 10, cardY + 30, 
+    // Temperature card (right)
+    drawCard(CARD_MARGIN*2 + cardWidth, cardY, cardWidth, cardHeight, "Temperature", COLOR_TEMP);
+    // Clear value area before drawing new value
+    tft.fillRect(CARD_MARGIN*2 + cardWidth + 10, cardY + 20, valueAreaWidth, 25, cardColor);
+    drawFloatOptimized(localTemp, 1, "°C", CARD_MARGIN*2 + cardWidth*2 - 10, cardY + 30, 
                       FONT_LARGE, textColor, cardColor, TR_DATUM, 
-                      lastTempEnv, "%.1f", cardWidth - 20);
+                      lastTempEnv, "%.1f", valueAreaWidth);
     
     // Apply animation effect if animating
     if (animating) {
@@ -509,11 +569,12 @@ void DisplayManager::drawHealthScreen(bool redrawStatic) {
         drawFooter();
     }
     
-    // Draw large heart rate display
-    int cardWidth = SCREEN_WIDTH - 2*CARD_MARGIN;
-    int cardHeight = 80;
+    // Modified for horizontal layout - side by side cards
+    int cardWidth = (SCREEN_WIDTH - 3*CARD_MARGIN) / 2;
+    int cardHeight = SCREEN_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT - 2*CARD_MARGIN;
     int cardY = HEADER_HEIGHT + CARD_MARGIN;
     
+    // Heart rate card (left)
     drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Heart Rate", COLOR_HEART);
     
     // Draw heart rate value
@@ -522,20 +583,20 @@ void DisplayManager::drawHealthScreen(bool redrawStatic) {
     String hrValue = String(hrStr);
     String lastHrValue = String(lastDisplayedHR > 0 ? lastDisplayedHR : 0);
     
-    drawStringOptimized(hrValue, CENTER_X, cardY + 40, FONT_LARGE, 
+    int heartCardCenterX = CARD_MARGIN + cardWidth / 2;
+    // Clear value area before drawing new value
+    tft.fillRect(CARD_MARGIN + 10, cardY + cardHeight/2 - 30, cardWidth - 20, 60, cardColor);
+    drawStringOptimized(hrValue, heartCardCenterX, cardY + cardHeight/2 - 15, FONT_LARGE, 
                        COLOR_HEART, cardColor, MC_DATUM, lastHrValue, 60, 30);
     
     // Draw BPM label
     String bpmLabel = "BPM";
     String lastBpmLabel = "";
-    drawStringOptimized(bpmLabel, CENTER_X, cardY + 65, FONT_SMALL, 
+    drawStringOptimized(bpmLabel, heartCardCenterX, cardY + cardHeight/2 + 15, FONT_SMALL, 
                        textColor, cardColor, MC_DATUM, lastBpmLabel, 40, 20);
     
-    // Draw SpO2 display
-    cardY += cardHeight + CARD_MARGIN;
-    cardHeight = 80;
-    
-    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Blood Oxygen", COLOR_SPO2);
+    // SpO2 card (right)
+    drawCard(CARD_MARGIN*2 + cardWidth, cardY, cardWidth, cardHeight, "Blood Oxygen", COLOR_SPO2);
     
     // Draw SpO2 value
     char spo2Str[10];
@@ -543,13 +604,16 @@ void DisplayManager::drawHealthScreen(bool redrawStatic) {
     String spo2Value = String(spo2Str);
     String lastSpo2Value = String(lastDisplayedSpO2 > 0 ? lastDisplayedSpO2 : 0);
     
-    drawStringOptimized(spo2Value, CENTER_X, cardY + 40, FONT_LARGE, 
+    int spo2CardCenterX = CARD_MARGIN*2 + cardWidth + cardWidth/2;
+    // Clear value area before drawing new value
+    tft.fillRect(CARD_MARGIN*2 + cardWidth + 10, cardY + cardHeight/2 - 30, cardWidth - 20, 60, cardColor);
+    drawStringOptimized(spo2Value, spo2CardCenterX, cardY + cardHeight/2 - 15, FONT_LARGE, 
                        COLOR_SPO2, cardColor, MC_DATUM, lastSpo2Value, 60, 30);
     
     // Draw % label
     String percentLabel = "%";
     String lastPercentLabel = "";
-    drawStringOptimized(percentLabel, CENTER_X, cardY + 65, FONT_SMALL, 
+    drawStringOptimized(percentLabel, spo2CardCenterX, cardY + cardHeight/2 + 15, FONT_SMALL, 
                        textColor, cardColor, MC_DATUM, lastPercentLabel, 20, 20);
     
     // Update last values
@@ -586,30 +650,36 @@ void DisplayManager::drawEnvironmentScreen(bool redrawStatic) {
         drawFooter();
     }
     
-    // Draw temperature display
-    int cardWidth = SCREEN_WIDTH - 2*CARD_MARGIN;
-    int cardHeight = 80;
+    // Modified for horizontal layout - side by side cards
+    int cardWidth = (SCREEN_WIDTH - 3*CARD_MARGIN) / 2;
+    int cardHeight = SCREEN_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT - 2*CARD_MARGIN;
     int cardY = HEADER_HEIGHT + CARD_MARGIN;
     
+    // Temperature card (left)
     drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Temperature", COLOR_TEMP);
     
+    // Clear value area before drawing new value
+    tft.fillRect(CARD_MARGIN + 10, cardY + cardHeight/2 - 20, cardWidth - 20, 40, cardColor);
+    
     // Draw temperature value and unit
-    drawFloatOptimized(localTemp, 1, "°C", CENTER_X, cardY + 45, 
+    int tempCardCenterX = CARD_MARGIN + cardWidth / 2;
+    drawFloatOptimized(localTemp, 1, "°C", tempCardCenterX, cardY + cardHeight/2, 
                       FONT_LARGE, COLOR_TEMP, cardColor, MC_DATUM, 
                       lastTempEnv, "%.1f", 100, 30);
     
-    // Draw pressure display
-    cardY += cardHeight + CARD_MARGIN;
-    cardHeight = 80;
+    // Pressure card (right)
+    drawCard(CARD_MARGIN*2 + cardWidth, cardY, cardWidth, cardHeight, "Pressure", COLOR_PRESSURE);
     
-    drawCard(CARD_MARGIN, cardY, cardWidth, cardHeight, "Pressure", COLOR_PRESSURE);
+    // Clear value area before drawing new value
+    tft.fillRect(CARD_MARGIN*2 + cardWidth + 10, cardY + cardHeight/2 - 20, cardWidth - 20, 40, cardColor);
     
     // Convert pressure to hPa for display
     float presHpa = isnan(localPres) ? NAN : localPres / 100.0f;
     float lastPresHpa = isnan(lastPresEnv) ? NAN : lastPresEnv / 100.0f;
     
     // Draw pressure value and unit
-    drawFloatOptimized(presHpa, 1, " hPa", CENTER_X, cardY + 45, 
+    int presCardCenterX = CARD_MARGIN*2 + cardWidth + cardWidth/2;
+    drawFloatOptimized(presHpa, 1, " hPa", presCardCenterX, cardY + cardHeight/2, 
                       FONT_LARGE, COLOR_PRESSURE, cardColor, MC_DATUM, 
                       lastPresHpa, "%.1f", 120, 30);
     
@@ -637,28 +707,30 @@ void DisplayManager::drawSettingsScreen(bool redrawStatic) {
         drawFooter();
     }
     
-    // Draw settings buttons
-    int buttonWidth = SCREEN_WIDTH - 2*CARD_MARGIN;
+    // Modified for horizontal layout - two columns of buttons
+    int buttonWidth = (SCREEN_WIDTH - 3*CARD_MARGIN) / 2;
     int buttonHeight = 35;
     int buttonY = HEADER_HEIGHT + CARD_MARGIN;
-    int buttonSpacing = 10;
     
+    // Left column
     // Theme toggle button
     drawButton(CARD_MARGIN, buttonY, buttonWidth, buttonHeight, 
               "Toggle Theme", primaryColor);
     
     // Display toggle button
-    buttonY += buttonHeight + buttonSpacing;
+    buttonY += buttonHeight + 10;
     drawButton(CARD_MARGIN, buttonY, buttonWidth, buttonHeight, 
               "Display On/Off", secondaryColor);
     
+    // Right column
+    buttonY = HEADER_HEIGHT + CARD_MARGIN;
+    
     // Reset button
-    buttonY += buttonHeight + buttonSpacing;
-    drawButton(CARD_MARGIN, buttonY, buttonWidth, buttonHeight, 
+    drawButton(CARD_MARGIN*2 + buttonWidth, buttonY, buttonWidth, buttonHeight, 
               "Reset Device", COLOR_WARNING);
     
-    // About section
-    buttonY += buttonHeight + 2*buttonSpacing;
+    // About section - centered at bottom
+    buttonY = SCREEN_HEIGHT - FOOTER_HEIGHT - 60;
     
     // Draw about text
     String aboutTitle = "About";
@@ -936,11 +1008,9 @@ void DisplayManager::drawWatchFace() {
 void DisplayManager::drawStringOptimized(const String& text, int x, int y, const GFXfont* fontPtr, 
                                         uint16_t textColor, uint16_t bgColor, uint8_t datum, 
                                         String& lastText, int clearWidth, int clearHeight) {
-    // Check if text actually changed or if a full redraw is forced
-    if (text == lastText && !needsRedrawCurrentScreen) {
-        return; // Nothing to draw
-    }
-
+    // Luôn xóa vùng cũ trước khi vẽ mới để tránh ghi đè
+    bool forceRedraw = true; // Thêm dòng này để luôn vẽ lại
+    
     // Set font and color
     tft.setFont(fontPtr);
     tft.setTextColor(textColor);
@@ -956,9 +1026,9 @@ void DisplayManager::drawStringOptimized(const String& text, int x, int y, const
         if (clearHeight < 0) clearHeight = (fontPtr ? 20 : 8) + 4;
     }
 
-    // If clearWidth/Height not provided, use new text bounds + padding
-    if (clearWidth < 0) clearWidth = w_new + 4;
-    if (clearHeight < 0) clearHeight = h_new + 4;
+    // Tăng kích thước vùng xóa để đảm bảo xóa hết nội dung cũ
+    if (clearWidth < 0) clearWidth = w_new + 10; // Tăng padding
+    if (clearHeight < 0) clearHeight = h_new + 10; // Tăng padding
 
     // Calculate clear area and cursor position based on datum
     int clearX = x, clearY = y, cursorX = x, cursorY = y;
@@ -977,6 +1047,9 @@ void DisplayManager::drawStringOptimized(const String& text, int x, int y, const
             clearX = x - clearWidth;
             cursorX = x - w_new - x1_new;
             break;
+        default: // TL_DATUM, ML_DATUM, BL_DATUM
+            cursorX = x - x1_new;
+            break;
     }
 
     // Vertical alignment
@@ -986,6 +1059,9 @@ void DisplayManager::drawStringOptimized(const String& text, int x, int y, const
         case MR_DATUM:
             clearY = y - clearHeight / 2;
             cursorY = y - h_new / 2 - y1_new;
+            break; 
+            clearY = y - clearHeight / 2;
+            cursorY = y - h_new / 2 - y1_new;
             break;
         case BL_DATUM:
         case BC_DATUM:
@@ -993,9 +1069,12 @@ void DisplayManager::drawStringOptimized(const String& text, int x, int y, const
             clearY = y - clearHeight;
             cursorY = y - h_new - y1_new;
             break;
+        default: // TL_DATUM, TC_DATUM, TR_DATUM
+            cursorY = y - y1_new;
+            break;
     }
 
-    // Perform the clear operation
+    // Luôn xóa vùng cũ trước khi vẽ mới
     tft.fillRect(clearX, clearY, clearWidth, clearHeight, bgColor);
 
     // Draw the new text
@@ -1013,25 +1092,12 @@ void DisplayManager::drawFloatOptimized(float value, int decimalPlaces, const St
                                        uint16_t textColor, uint16_t bgColor, uint8_t datum, 
                                        float& lastValue, const char* format, 
                                        int clearWidth, int clearHeight) {
-    // Determine if value changed significantly or became/stopped being NAN
-    bool valueChanged = false;
-    bool currentIsNan = isnan(value);
-    bool lastIsNan = isnan(lastValue);
-    float epsilon = pow(10, -decimalPlaces - 1);
-
-    if (currentIsNan != lastIsNan) {
-        valueChanged = true;
-    } else if (!currentIsNan && (abs(value - lastValue) > epsilon)) {
-        valueChanged = true;
-    }
-
-    if (!valueChanged && !needsRedrawCurrentScreen) {
-        return; // No significant change
-    }
+    // Luôn vẽ lại để tránh ghi đè
+    bool valueChanged = true;
 
     // Format the current value string
     char currentValStr[20];
-    if (currentIsNan) {
+    if (isnan(value)) {
         strcpy(currentValStr, "--");
     } else {
         if (format) {
@@ -1044,7 +1110,7 @@ void DisplayManager::drawFloatOptimized(float value, int decimalPlaces, const St
 
     // Format the last value string
     String lastText = "--" + unit;
-    if (!lastIsNan) {
+    if (!isnan(lastValue)) {
          char lastValStr[20];
          if (format) snprintf(lastValStr, sizeof(lastValStr), format, lastValue);
          else dtostrf(lastValue, 0, decimalPlaces, lastValStr);
@@ -1062,10 +1128,8 @@ void DisplayManager::drawIntOptimized(int value, const String& unit, int x, int 
                                      const GFXfont* fontPtr, uint16_t textColor, uint16_t bgColor, 
                                      uint8_t datum, int& lastValue, const char* defaultText, 
                                      int clearWidth, int clearHeight, int validThreshold) {
-    // Check if value changed or full redraw needed
-    if (value == lastValue && !needsRedrawCurrentScreen) {
-        return;
-    }
+    // Luôn vẽ lại để tránh ghi đè
+    bool valueChanged = true;
 
     // Format current and last strings
     String currentText;
@@ -1126,13 +1190,10 @@ void DisplayManager::switchDisplayMode() {
 void DisplayManager::toggleTheme() {
     if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         currentTheme = 1 - currentTheme;
-        if (needsRedrawCurrentScreen  == pdTRUE) {
-            currentTheme = 1 - currentTheme;
-            needsRedrawCurrentScreen = true;
-            startAnimation(ANIM_FADE_IN);
-            Serial.print("Switched theme to: "); Serial.println(currentTheme == 0 ? "Dark" : "Light");
-            xSemaphoreGive(dataMutex);
-        }
+        needsRedrawCurrentScreen = true;
+        startAnimation(ANIM_FADE_IN);
+        Serial.print("Switched theme to: "); Serial.println(currentTheme == 0 ? "Dark" : "Light");
+        xSemaphoreGive(dataMutex);
     }
 }
 
@@ -1143,47 +1204,4 @@ bool DisplayManager::isScreenOn() const {
         xSemaphoreGive(dataMutex);
     }
     return isOn;
-}
-
-// Helper function to calculate cursor position based on datum
-void calculateCursorPos(int x, int y, uint8_t datum,
-                        int16_t text_x_offset, int16_t text_y_offset,
-                        uint16_t text_w, uint16_t text_h,
-                        int& cursorX, int& cursorY)
-{
-    cursorX = x; // Default: Top-Left alignment
-
-    // Horizontal alignment
-    switch (datum) {
-        case TC_DATUM:
-        case MC_DATUM:
-        case BC_DATUM:
-            cursorX = x - text_w / 2 - text_x_offset; // Center align
-            break;
-        case TR_DATUM:
-        case MR_DATUM:
-        case BR_DATUM:
-            cursorX = x - text_w - text_x_offset; // Right align
-            break;
-    }
-
-    // Vertical alignment
-    switch (datum) {
-        case ML_DATUM:
-        case MC_DATUM:
-        case MR_DATUM:
-            cursorY = y - text_h / 2 - text_y_offset;
-            break;
-        case BL_DATUM:
-        case BC_DATUM:
-        case BR_DATUM:
-            cursorY = y - text_h - text_y_offset;
-            break;
-        default:
-            cursorY = y - text_y_offset; // Top alignment
-    }
-
-    // Prevent cursor going off-screen
-    if (cursorX < 0) cursorX = 0;
-    if (cursorY < 0) cursorY = 0;
 }

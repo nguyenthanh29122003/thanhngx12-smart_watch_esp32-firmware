@@ -1,106 +1,95 @@
 // src/HeartRateSpO2.cpp
 #include "HeartRateSpO2.h"
-#include "Config.h"
-#include "heartRate.h" // Đảm bảo file này tồn tại và định nghĩa checkForBeat()
+// Config.h đã được include trong HeartRateSpO2.h
 #include <Arduino.h>
-#include <Wire.h>      // Cần cho Wire
-#include <cmath>       // Cần cho isnan, abs, sqrt
+#include <Wire.h>
+#include <cmath> // Cho isnan, abs, sqrt
 
-// Khai báo Mutex I2C toàn cục
+// Khai báo Mutex I2C toàn cục (được định nghĩa trong main.cpp)
 extern SemaphoreHandle_t i2cMutex;
 
-// Constructor
+// Bảng tra cứu SpO2 (Từ nanoPulsePPG.ino)
+static const uint8_t spo2LookupTable[184] PROGMEM = {
+    95, 95, 95, 96, 96, 96, 97, 97, 97, 97, 97, 98, 98, 98, 98, 98, 99, 99, 99, 99,
+    99, 99, 99, 99, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 99, 99, 99, 99, 99, 99, 99, 99, 98, 98, 98, 98, 98, 98, 97, 97,
+    97, 97, 96, 96, 96, 96, 95, 95, 95, 94, 94, 94, 93, 93, 93, 92, 92, 92, 91, 91,
+    90, 90, 89, 89, 89, 88, 88, 87, 87, 86, 86, 85, 85, 84, 84, 83, 82, 82, 81, 81,
+    80, 80, 79, 78, 78, 77, 76, 76, 75, 74, 74, 73, 72, 72, 71, 70, 69, 69, 68, 67,
+    66, 66, 65, 64, 63, 62, 62, 61, 60, 59, 58, 57, 56, 56, 55, 54, 53, 52, 51, 50,
+    49, 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 31, 30, 29,
+    28, 27, 26, 25, 23, 22, 21, 20, 19, 17, 16, 15, 14, 12, 11, 10, 9, 7, 6, 5,
+    3, 2, 1 };
+
+// --- Constructor ---
 HeartRateSpO2::HeartRateSpO2()
-    : particleSensor(), // Khởi tạo đối tượng cảm biến
-      _wire(nullptr),   // Khởi tạo con trỏ Wire
-      taskHandle(NULL), dataMutex(NULL),
+    : sensor(), pulseIR(), pulseRed(), bpmSmoother(), // Khởi tạo các đối tượng
+      _wire(nullptr), taskHandle(NULL), dataMutex(NULL),
       sensorReady(false),
-      heartRateStable(0), spo2Stable(-999), // Khởi tạo giá trị ổn định
-      irValueLocal(0), redValueLocal(0),
-      rateSpot(0), lastBeat(0),
-      spo2_redDC(0.0f), spo2_irDC(0.0f), // Khởi tạo bộ lọc DC
-      hrBufferIndex(0), spo2BufferIndex(0),
-      hrValidCount(0), spo2ValidCount(0),
-      hrIsStable(false), spo2IsStable(false) // Khởi tạo cờ ổn định
+      heartRateFinal(0), spo2Final(-999),
+      irValueRawLast(0), redValueRawLast(0),
+      lastBeatTimestampMs(0)
+      // hrIsStable(false), spo2IsStable(false) // Bỏ qua logic ổn định phức tạp ban đầu
 {
-    memset(rates, 0, sizeof(rates));         // Xóa buffer rates HR
-    memset(hrBuffer, 0, sizeof(hrBuffer));     // Xóa buffer ổn định HR
-    memset(spo2Buffer, 0, sizeof(spo2Buffer)); // Xóa buffer ổn định SpO2
     dataMutex = xSemaphoreCreateMutex();
     if (dataMutex == NULL) {
         Serial.println("CRITICAL: Failed to create HeartRateSpO2 data mutex!");
     }
 }
 
-// --- Hàm begin() - Khởi tạo MAX3010x ---
+// --- Hàm begin() ---
 bool HeartRateSpO2::begin(TwoWire &wireInstance) {
     sensorReady = false;
-    _wire = &wireInstance; // Lưu đối tượng Wire
+    _wire = &wireInstance;
 
-    // Lấy Mutex I2C
-    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS * 2)) == pdTRUE) {
-        Serial.println("Initializing MAX3010x...");
-
-        // Khởi tạo cảm biến với địa chỉ và bus I2C cụ thể
-        // Sử dụng địa chỉ MAX30102_ADDRESS từ Config.h
-        if (!particleSensor.begin(*_wire, I2C_SPEED_STANDARD, MAX30102_ADDRESS)) { // Dùng tốc độ chuẩn 100kHz
-            Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-            Serial.printf("MAX3010x NOT FOUND at address 0x%02X!\n", MAX30102_ADDRESS);
-            Serial.println("Check wiring, I2C address.");
-            Serial.println("HeartRate/SpO2 features disabled.");
-            Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-        } else {
-            Serial.println("MAX3010x Found and Initialized!");
-            sensorReady = true;
-
-            // --- Cấu hình chi tiết cảm biến ---
-            Serial.println("Configuring MAX3010x...");
-            // Giá trị ví dụ - CẦN TINH CHỈNH
-            byte ledBrightness = 60;             // Độ sáng LED (~11mA)
-            byte sampleAverage = 4;              // Trung bình 4 mẫu
-            byte ledMode = 2;                    // Mode 2: Red + IR
-            int sampleRate = SAMPLE_RATE_ACTIVE; // Tần số từ Config.h (ví dụ 50Hz)
-            int pulseWidth = 411;                // Độ rộng xung (411us)
-            int adcRange = 4096;                 // Dải ADC (4096 nA)
-
-            particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
-            particleSensor.setPulseAmplitudeRed(ledBrightness);
-            particleSensor.setPulseAmplitudeIR(ledBrightness);
-            particleSensor.setPulseAmplitudeGreen(0); // Tắt Green
-
-            Serial.println("MAX3010x Configured.");
-        }
-        xSemaphoreGive(i2cMutex); // Trả mutex
-    } else {
-        Serial.println("CRITICAL: Timeout waiting for I2C mutex during MAX3010x init!");
+    Serial.println("Initializing HeartRateSpO2 Module (using Custom MAX30102 Driver)...");
+    if (!sensor.begin(*_wire, MAX30102_ADDRESS)) { // Địa chỉ từ Config.h
+        Serial.println("!!! ERROR: MAX30102_Custom Driver - Device NOT FOUND!");
+        return false;
     }
-    return sensorReady;
+
+    Serial.println("MAX30102_Custom Driver Found. Configuring device...");
+    // Sử dụng các hằng số từ Config.h để cấu hình cảm biến
+    sensor.setupDevice(
+        MAX_LED_BRIGHTNESS,    // 1. ledBrightnessIR
+        MAX_LED_BRIGHTNESS,    // 2. ledBrightnessRed (Hoặc MAX_RED_LED_BRIGHTNESS nếu khác)
+        MAX_SAMPLE_AVERAGE,    // 3. sampleAverage
+        MAX_LED_MODE,          // 4. ledModeConfig (Ví dụ: 0x03 cho SpO2, 0x07 cho Multi-LED)
+        // --- THÊM 4 THAM SỐ CHO SLOT ---
+        MAX_SLOT1_LEDS,        // 5. slot1ActiveLEDs (Ví dụ: LED IR)
+        MAX_SLOT2_LEDS,        // 6. slot2ActiveLEDs (Ví dụ: LED Red)
+        MAX_SLOT3_LEDS,        // 7. slot3ActiveLEDs (Ví dụ: 0x00 nếu không dùng)
+        MAX_SLOT4_LEDS,        // 8. slot4ActiveLEDs (Ví dụ: 0x00 nếu không dùng)
+        // -----------------------------
+        MAX_SAMPLE_RATE,       // 9. sampleRateHz
+        MAX_PULSE_WIDTH,       // 10. pulseWidthUs
+        MAX_ADC_RANGE          // 11. adcRangeNA
+    );
+    sensor.printRevisionID();
+
+    sensorReady = true;
+    Serial.println("HeartRateSpO2 Module Initialized and Sensor Configured.");
+    return true;
 }
 
 // --- startTask ---
 void HeartRateSpO2::startTask(UBaseType_t priority) {
     if (!sensorReady) {
-        Serial.println("MAX3010x not ready, skipping HeartRate Task creation.");
+        Serial.println("MAX30102 not ready, skipping HeartRateSpO2 Task creation.");
         return;
     }
-    // Tăng stack size nếu cần thiết, 4096 thường là đủ
     xTaskCreate(taskFunction, "HeartRateSpO2Task", 4096, this, priority, &taskHandle);
-    if (taskHandle == NULL) Serial.println("CRITICAL: Error creating HeartRate Task!");
-    else Serial.println("HeartRate Task started.");
+    if (taskHandle == NULL) Serial.println("CRITICAL: Error creating HeartRateSpO2 Task!");
+    else Serial.println("HeartRateSpO2 Task started.");
 }
 
 // --- stopTask ---
 void HeartRateSpO2::stopTask() {
     if (taskHandle != NULL) {
-        TaskHandle_t tempHandle = taskHandle;
-        taskHandle = NULL;
+        TaskHandle_t tempHandle = taskHandle; taskHandle = NULL;
         vTaskDelete(tempHandle);
-        if (sensorReady && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-            particleSensor.shutDown(); // Đưa cảm biến về chế độ nguồn thấp
-            xSemaphoreGive(i2cMutex);
-            Serial.println("MAX3010x shutdown.");
-        }
-        Serial.println("HeartRateSpO2 task stopped.");
+        if (sensorReady) sensor.shutDown(); // Tắt cảm biến khi dừng task
+        Serial.println("HeartRateSpO2 task stopped and sensor shutdown.");
     }
 }
 
@@ -109,278 +98,161 @@ void HeartRateSpO2::taskFunction(void* pvParameters) {
     HeartRateSpO2* instance = static_cast<HeartRateSpO2*>(pvParameters);
     if (instance == nullptr) { vTaskDelete(NULL); return; }
 
-    Serial.println("HeartRate Task running...");
-    // Tính toán delay dựa trên sample rate để khớp (nếu cần)
-    // Ví dụ: 50Hz -> 1000ms / 50 = 20ms delay
-    TickType_t taskDelay = pdMS_TO_TICKS(1000 / SAMPLE_RATE_ACTIVE);
+    Serial.println("HeartRateSpO2 Task running...");
+    // Tính toán delay dựa trên tần suất lấy mẫu của chip hoặc tần suất xử lý mong muốn
+    // Nếu MAX_SAMPLE_RATE là 100Hz, đọc FIFO mỗi 20-50ms là hợp lý
+    TickType_t taskDelay = pdMS_TO_TICKS(1000 / MAX_SAMPLE_RATE); // Khớp với SR chip
+    if (taskDelay < pdMS_TO_TICKS(20)) taskDelay = pdMS_TO_TICKS(20); // Giới hạn tối thiểu 20ms (50Hz)
+
     while (true) {
-        instance->updateSensor();
-        vTaskDelay(taskDelay); // Delay phù hợp với tần số lấy mẫu
+        instance->updateSensorData();
+        vTaskDelay(taskDelay);
     }
 }
 
-// --- updateSensor (Logic chính với ổn định hóa) ---
-void HeartRateSpO2::updateSensor() {
+// --- updateSensorData (Logic chính) ---
+void HeartRateSpO2::updateSensorData() {
     if (!sensorReady) return;
 
-    long irValue = 0, redValue = 0;
-    bool readSuccess = false;
+    // sensor.readFIFO() đã được bảo vệ bằng i2cMutex bên trong Max30102_Custom.cpp
+    uint16_t newSamples = sensor.readFIFO();
 
-    // Đọc I2C
-    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        // Có thể cần kiểm tra FIFO trước khi đọc nếu thư viện hỗ trợ
-        // particleSensor.check(); // Ví dụ
-        // while (particleSensor.available()) {
-        //    irValue = particleSensor.getFIFOIR();
-        //    redValue = particleSensor.getFIFORed();
-        //    readSuccess = true; // Chỉ lấy mẫu cuối cùng từ FIFO hoặc xử lý tất cả
-        // }
-        // Nếu đọc trực tiếp:
-        irValue = particleSensor.getIR();
-        redValue = particleSensor.getRed();
-        if (irValue > 0 || redValue > 0 || lastBeat == 0) readSuccess = true;
-        else Serial.println("Warning: MAX3010x read zero values.");
-        xSemaphoreGive(i2cMutex);
-    } else { Serial.println("Timeout waiting for I2C mutex in HeartRateSpO2"); return; }
-
-    if (!readSuccess) {
-        // Nếu đọc lỗi, logic kiểm tra ổn định sẽ tự động xử lý
-        checkHrStability(0); // Báo giá trị không hợp lệ
-        checkSpo2Stability(-999);
-        // Cập nhật giá trị thô về 0
-        if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            irValueLocal = 0; redValueLocal = 0;
-            xSemaphoreGive(dataMutex);
-        }
+    if (newSamples == 0 && sensor.available() == 0) {
+        // Không có dữ liệu mới từ cảm biến
         return;
     }
 
-    // --- Tính toán giá trị thô ---
-    int currentHr = 0;
-    int currentSpo2 = -999;
+    // Biến tạm để tính toán trong chu kỳ này
+    int currentCalculatedHr = 0;
+    int currentCalculatedSpo2 = -999;
 
-    if (irValue > IR_THRESHOLD) { // Sử dụng ngưỡng từ Config.h
-        // Tính HR
-        if (checkForBeat(irValue)) {
-            long delta = millis() - lastBeat;
-            if (delta > 150 && delta < 3000) { // Thêm giới hạn delta max (20 BPM min)
-                lastBeat = millis();
-                float beatsPerMinute = 60000.0f / delta;
-                if (beatsPerMinute < BPM_MAX && beatsPerMinute > BPM_MIN) { // Dùng hằng số Config
-                    rates[rateSpot++] = (byte)beatsPerMinute;
-                    rateSpot %= 4;
-                    int sum = 0; byte validSamples = 0;
-                    for (byte x = 0; x < 4; x++) {
-                        if (rates[x] >= BPM_MIN && rates[x] < BPM_MAX) { sum += rates[x]; validSamples++; }
-                    }
-                    if (validSamples > 0) currentHr = sum / validSamples;
+    // Xử lý tất cả các mẫu có sẵn trong buffer của driver
+    while (sensor.available()) {
+        uint32_t ir = sensor.getIR();
+        uint32_t red = sensor.getRed();
+        sensor.nextSample(); // Quan trọng: Di chuyển con trỏ đọc của buffer driver
+
+        // Cập nhật giá trị thô cuối cùng (để gửi qua BLE nếu cần)
+        irValueRawLast = ir;
+        redValueRawLast = red;
+
+        // Kiểm tra có ngón tay không
+        if (ir < IR_DETECT_THRESHOLD) { // Ngưỡng từ Config.h
+             // Nếu tín hiệu IR quá thấp, không xử lý HR/SpO2
+             // Reset giá trị nếu trước đó có (trong dataMutex)
+             if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                 if (heartRateFinal != 0 || spo2Final != -999) {
+                    // Serial.println("HR_SPO2: Finger off or low signal.");
+                    heartRateFinal = 0;
+                    spo2Final = -999;
+                    lastBeatTimestampMs = 0; // Reset thời gian nhịp
+                 }
+                xSemaphoreGive(dataMutex);
+            }
+            continue; // Xử lý mẫu tiếp theo (nếu có)
+        }
+
+        // --- Xử lý tín hiệu IR cho Nhịp tim (HR) ---
+        int16_t acIR = pulseIR.dc_filter(ir);    // Loại bỏ DC
+        acIR = pulseIR.ma_filter(acIR);          // Làm mịn AC
+
+        if (pulseIR.isBeat(acIR)) { // Phát hiện nhịp
+            unsigned long currentTimeMs = millis();
+            if (lastBeatTimestampMs != 0) { // Chỉ tính nếu đã có nhịp trước
+                long beatIntervalMs = currentTimeMs - lastBeatTimestampMs;
+                // Giới hạn khoảng thời gian giữa các nhịp (ví dụ: 200ms - 2000ms tương ứng 30-300 BPM)
+                // (60000 / BPM_MAX) < beatIntervalMs < (60000 / BPM_MIN)
+                if (beatIntervalMs > (60000 / BPM_MAX) && beatIntervalMs < (60000 / BPM_MIN)) {
+                    int bpm = 60000 / beatIntervalMs;
+                    currentCalculatedHr = bpmSmoother.filter(bpm); // Làm mịn giá trị BPM
                 }
             }
+            lastBeatTimestampMs = currentTimeMs; // Cập nhật thời điểm nhịp cuối
         }
-        // Tính SpO2
-        float spo2_calculated = calculateSpO2(redValue, irValue);
-        // Không kiểm tra min/max ở đây nữa, để hàm ổn định làm
-        currentSpo2 = (int)(spo2_calculated + 0.5f); // Làm tròn
 
-    } else { // Không có ngón tay
-        currentHr = 0;
-        currentSpo2 = -999;
-        // Reset trạng thái khi không có ngón tay
-        if (hrValidCount > 0 || spo2ValidCount > 0) { // Chỉ reset nếu trước đó có dữ liệu
-            memset(rates, 0, sizeof(rates)); rateSpot = 0; lastBeat = 0;
-            spo2_redDC = 0.0f; spo2_irDC = 0.0f;
-            // Reset cả buffer ổn định
-             memset(hrBuffer, 0, sizeof(hrBuffer)); hrBufferIndex = 0; hrValidCount = 0;
-             memset(spo2Buffer, 0, sizeof(spo2Buffer)); spo2BufferIndex = 0; spo2ValidCount = 0;
-             hrIsStable = false; spo2IsStable = false;
-             // Cập nhật giá trị stable về mặc định
-             if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                  heartRateStable = 0; spo2Stable = -999;
-                  xSemaphoreGive(dataMutex);
-             }
-        }
-    }
+        // --- Xử lý tín hiệu Red (cũng cần lọc để lấy AC/DC) ---
+        int16_t acRed = pulseRed.dc_filter(red);
+        // acRed = pulseRed.ma_filter(acRed); // Tùy chọn làm mịn Red AC
+        pulseRed.isBeat(acRed); // Gọi isBeat cho Red để cập nhật avgAC/avgDC của nó
 
-    // --- Kiểm tra và cập nhật độ ổn định ---
-    checkHrStability(currentHr);
-    checkSpo2Stability(currentSpo2);
+        // --- Tính toán SpO2 (chỉ khi có tín hiệu nhịp tim tốt) ---
+        if (currentCalculatedHr > BPM_MIN - 5) { // Chỉ tính SpO2 nếu HR có vẻ hợp lý
+            int32_t irDC_val = pulseIR.avgDC();
+            int16_t irAC_val = pulseIR.avgAC();
+            int32_t redDC_val = pulseRed.avgDC();
+            int16_t redAC_val = pulseRed.avgAC();
 
-    // --- Cập nhật giá trị IR/Red thô ---
+            // Kiểm tra các giá trị AC/DC trước khi tính toán
+            // Ngưỡng này cần tinh chỉnh kỹ lưỡng!
+            const int32_t MIN_DC_FOR_SPO2 = 10000; // Ví dụ: DC phải đủ lớn
+            const int16_t MIN_AC_FOR_SPO2 = PULSE_MIN_BEAT_AMPLITUDE / 2; // Ví dụ: AC phải đủ lớn
+
+            if (abs(irDC_val) > MIN_DC_FOR_SPO2 && abs(redDC_val) > MIN_DC_FOR_SPO2 &&
+                abs(irAC_val) > MIN_AC_FOR_SPO2 && abs(redAC_val) > MIN_AC_FOR_SPO2)
+            {
+                // Tính R ratio: (RedAC / RedDC) / (IRAC / IRDC)
+                double R_numerator = (double)abs(redAC_val) * abs(irDC_val);
+                double R_denominator = (double)abs(irAC_val) * abs(redDC_val);
+
+                if (R_denominator != 0) {
+                    double R = R_numerator / R_denominator;
+                    int R_scaled_for_table = (int)(R * 100.0); // Nhân R với 100 để tra bảng
+
+                    if (R_scaled_for_table >= 0 && R_scaled_for_table < 184) { // Giới hạn của bảng spo2LookupTable
+                        currentCalculatedSpo2 = pgm_read_byte_near(&spo2LookupTable[R_scaled_for_table]);
+                        // Kiểm tra lại với ngưỡng min/max từ Config
+                        if (currentCalculatedSpo2 < SPO2_MIN_VALID || currentCalculatedSpo2 > SPO2_MAX_VALID) {
+                            currentCalculatedSpo2 = -999;
+                        }
+                    } else {
+                        currentCalculatedSpo2 = -999; // R ratio ngoài khoảng cho bảng
+                    }
+                } else { currentCalculatedSpo2 = -999; } // Mẫu số bằng 0
+            } else { currentCalculatedSpo2 = -999; } // Tín hiệu AC/DC không đủ mạnh
+        } // Kết thúc tính SpO2
+    } // Kết thúc vòng lặp while(sensor.available())
+
+    // --- Cập nhật giá trị cuối cùng (đã xử lý) vào biến thành viên ---
+    // (Tạm thời chưa có logic ổn định hóa phức tạp, lấy giá trị cuối cùng tính được)
     if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        irValueLocal = irValue;
-        redValueLocal = redValue;
+        if (currentCalculatedHr > 0) { // Chỉ cập nhật HR nếu có giá trị mới
+            heartRateFinal = currentCalculatedHr;
+        }
+        // Cập nhật SpO2 nếu có giá trị mới hợp lệ, nếu không giữ giá trị cũ (hoặc reset nếu không có ngón tay)
+        if (currentCalculatedSpo2 >= SPO2_MIN_VALID) {
+            spo2Final = currentCalculatedSpo2;
+        } else if (irValueRawLast < IR_DETECT_THRESHOLD) { // Nếu không có ngón tay thì chắc chắn reset SpO2
+            spo2Final = -999;
+        }
+        // Nếu currentCalculatedSpo2 là -999 nhưng đang có ngón tay, có thể giữ giá trị spo2Final cũ
+        // để tránh hiển thị "--" liên tục khi tín hiệu hơi nhiễu.
+        // Hoặc, nếu muốn nó phản ánh ngay lập tức:
+        // else { spo2Final = -999; }
+
+
         xSemaphoreGive(dataMutex);
-    }
+    } else { Serial.println("Timeout taking dataMutex for final HR/SpO2 update!"); }
 
-    // Debug (Giữ nguyên hoặc thay đổi tần suất)
-    // static unsigned long lastHrDebugTime = 0;
-    // if (millis() - lastHrDebugTime > 5000) { /* ... */ }
-}
-
-// --- Hàm kiểm tra ổn định HR ---
-void HeartRateSpO2::checkHrStability(int currentHr) {
-    bool wasStable = hrIsStable;
-    hrIsStable = false; // Reset cờ
-
-    // Chỉ thêm vào buffer nếu HR hợp lệ (theo min/max)
-    if (currentHr >= BPM_MIN && currentHr < BPM_MAX) {
-        hrBuffer[hrBufferIndex] = currentHr;
-        hrBufferIndex = (hrBufferIndex + 1) % STABLE_BUFFER_SIZE;
-        if (hrValidCount < STABLE_BUFFER_SIZE) hrValidCount++;
-    } else {
-        // Nếu giá trị không hợp lệ, coi như mất 1 mẫu hợp lệ trong buffer
-        if (hrValidCount > 0) hrValidCount--;
-    }
-
-    // Kiểm tra ổn định nếu đủ mẫu
-    if (hrValidCount >= MIN_VALID_FOR_STABLE) {
-        int minVal = hrBuffer[0], maxVal = hrBuffer[0];
-        int sum = 0; byte count = 0;
-
-        // Tìm min/max và tính tổng các mẫu hợp lệ trong buffer
-        // Cách hiệu quả hơn là chỉ xét hrValidCount phần tử cuối
-        int startIndex = (hrBufferIndex - hrValidCount + STABLE_BUFFER_SIZE) % STABLE_BUFFER_SIZE;
-        minVal = 300; // Đặt giá trị khởi tạo ngoài khoảng
-        maxVal = 0;
-        for (int i = 0; i < hrValidCount; ++i) {
-            int index = (startIndex + i) % STABLE_BUFFER_SIZE;
-            int val = hrBuffer[index];
-             if (val >= BPM_MIN && val < BPM_MAX) { // Double check hợp lệ
-                 sum += val;
-                 if (val < minVal) minVal = val;
-                 if (val > maxVal) maxVal = val;
-                 count++;
-             }
-        }
-
-
-        // Nếu đủ mẫu thực tế và độ chênh lệch nhỏ
-        if (count >= MIN_VALID_FOR_STABLE && (maxVal - minVal) <= HR_STABILITY_THRESHOLD) {
-            int stableValue = sum / count; // Giá trị ổn định là trung bình
-            if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                // Chỉ cập nhật nếu giá trị mới khác giá trị cũ (tùy chọn)
-                if (heartRateStable != stableValue) {
-                    heartRateStable = stableValue;
-                    // Serial.printf("HR Stable -> %d\n", heartRateStable); // Debug
-                }
-                hrIsStable = true; // Đặt cờ ổn định
-                xSemaphoreGive(dataMutex);
-            } else { Serial.println("Timeout taking dataMutex for stable HR update!"); }
-        }
-    }
-
-    // Nếu không ổn định và trước đó là ổn định -> Reset giá trị stable
-    if (!hrIsStable && wasStable) {
-        if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            heartRateStable = 0; // Reset về 0
-            // Serial.println("HR Unstable"); // Debug
-            xSemaphoreGive(dataMutex);
-        }
+    // Debug định kỳ
+    static unsigned long lastDebugOutputTime = 0;
+    if (millis() - lastDebugOutputTime > 3000) { // In mỗi 3 giây
+        Serial.printf("HR_SPO2 Module - HR: %d, SpO2: %d, IR: %ld, Red: %ld\n",
+                      heartRateFinal, spo2Final, irValueRawLast, redValueRawLast);
+        lastDebugOutputTime = millis();
     }
 }
 
-// --- Hàm kiểm tra ổn định SpO2 ---
-void HeartRateSpO2::checkSpo2Stability(int currentSpo2) {
-    bool wasStable = spo2IsStable;
-    spo2IsStable = false;
-
-    // Chỉ thêm vào buffer nếu SpO2 hợp lệ (>= SPO2_MIN và <= SPO2_MAX)
-    if (currentSpo2 >= SPO2_MIN && currentSpo2 <= SPO2_MAX) {
-        spo2Buffer[spo2BufferIndex] = currentSpo2;
-        spo2BufferIndex = (spo2BufferIndex + 1) % STABLE_BUFFER_SIZE;
-        if (spo2ValidCount < STABLE_BUFFER_SIZE) spo2ValidCount++;
-    } else {
-        if (spo2ValidCount > 0) spo2ValidCount--;
-    }
-
-    // Kiểm tra ổn định
-    if (spo2ValidCount >= MIN_VALID_FOR_STABLE) {
-        int minVal = 101, maxVal = -1, sum = 0;
-        byte count = 0;
-        int startIndex = (spo2BufferIndex - spo2ValidCount + STABLE_BUFFER_SIZE) % STABLE_BUFFER_SIZE;
-
-        for (int i = 0; i < spo2ValidCount; ++i) {
-            int index = (startIndex + i) % STABLE_BUFFER_SIZE;
-             int val = spo2Buffer[index];
-             if (val >= SPO2_MIN && val <= SPO2_MAX) { // Kiểm tra lại
-                 sum += val;
-                 if (val < minVal) minVal = val;
-                 if (val > maxVal) maxVal = val;
-                 count++;
-             }
-        }
-
-        if (count >= MIN_VALID_FOR_STABLE && (maxVal - minVal) <= SPO2_STABILITY_THRESHOLD) {
-            int stableValue = (int)(((float)sum / count) + 0.5f); // Làm tròn
-            if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                if (spo2Stable != stableValue) {
-                     spo2Stable = stableValue;
-                    // Serial.printf("SpO2 Stable -> %d\n", spo2Stable); // Debug
-                }
-                spo2IsStable = true;
-                xSemaphoreGive(dataMutex);
-            } else { Serial.println("Timeout taking dataMutex for stable SpO2 update!"); }
-        }
-    }
-
-    // Reset nếu mất ổn định
-    if (!spo2IsStable && wasStable) {
-        if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            spo2Stable = -999; // Reset về không hợp lệ
-            // Serial.println("SpO2 Unstable"); // Debug
-            xSemaphoreGive(dataMutex);
-        }
-    }
-}
-
-// --- lowPassFilter (Giữ nguyên) ---
-float HeartRateSpO2::lowPassFilter(float input, float previous, float alpha) {
-    alpha = constrain(alpha, 0.0f, 1.0f);
-    if (isnan(previous)) return input;
-    return alpha * previous + (1.0f - alpha) * input;
-}
-
-// --- calculateSpO2 (Sử dụng biến thành viên và hằng số Config) ---
-float HeartRateSpO2::calculateSpO2(long redValue, long irValue) {
-    const float alpha = FILTER_ALPHA; // Dùng hằng số Config
-    const float minDCLevel = 1000.0f; // Ngưỡng DC tối thiểu
-    const float minR = 0.4f;          // Giới hạn R dưới
-    const float maxR = 1.2f;          // Giới hạn R trên
-
-    // Cập nhật DC estimates dùng biến thành viên
-    spo2_redDC = lowPassFilter((float)redValue, spo2_redDC, alpha);
-    spo2_irDC = lowPassFilter((float)irValue, spo2_irDC, alpha);
-
-    // Ước tính AC
-    float redAC = (float)redValue - spo2_redDC;
-    float irAC = (float)irValue - spo2_irDC;
-
-    // Kiểm tra điều kiện
-    if (spo2_irDC < minDCLevel || spo2_redDC < minDCLevel || irAC == 0.0f || redAC == 0.0f) {
-        return -999.0f;
-    }
-
-    // Tính R
-    float R = (redAC / spo2_redDC) / (irAC / spo2_irDC);
-
-    // Kiểm tra giới hạn R
-    if (R < minR || R > maxR || isnan(R)) {
-        return -999.0f;
-    }
-
-    // Công thức SpO2
-    float spo2 = 104.0f - 17.0f * R;
-
-    return spo2;
-}
-
-// --- getData (Trả về giá trị ổn định) ---
-void HeartRateSpO2::getData(int& stableHeartRate, int& stableSpo2, long& lastIrValue, long& lastRedValue) {
+// --- getData ---
+void HeartRateSpO2::getData(int& heartRate, int& spo2, long& irValue, long& redValue) {
     if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
-        stableHeartRate = hrIsStable ? heartRateStable : 0; // Trả về 0 nếu không ổn định
-        stableSpo2 = spo2IsStable ? spo2Stable : -999;      // Trả về -999 nếu không ổn định
-        lastIrValue = irValueLocal;
-        lastRedValue = redValueLocal;
+        heartRate = heartRateFinal;
+        spo2 = spo2Final;
+        irValue = irValueRawLast;   // Trả về giá trị thô cuối cùng
+        redValue = redValueRawLast;
         xSemaphoreGive(dataMutex);
-    } else { stableHeartRate = -1; stableSpo2 = -1; lastIrValue = -1; lastRedValue = -1; }
+    } else {
+        // Lỗi nghiêm trọng nếu không lấy được mutex
+        heartRate = -1; spo2 = -1; irValue = -1; redValue = -1;
+        Serial.println("CRITICAL: Failed to take HRSpO2 dataMutex in getData!");
+    }
 }

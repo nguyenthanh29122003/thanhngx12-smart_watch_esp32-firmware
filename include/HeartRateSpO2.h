@@ -2,71 +2,51 @@
 #ifndef HEART_RATE_SPO2_H
 #define HEART_RATE_SPO2_H
 
-#include <MAX30105.h> // Đảm bảo đúng tên chip (MAX30102?) nếu thư viện hỗ trợ
+#include "Max30102_Custom.h" // Sử dụng driver MAX30102 tùy chỉnh
+#include "Pulse_Custom.h"    // Sử dụng lớp xử lý xung tùy chỉnh
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
-#include "Config.h" // Cần để lấy TASK_PRIORITY_HEART_RATE
+#include "Config.h"          // Cho các hằng số cấu hình và ưu tiên task
 
 class HeartRateSpO2 {
 public:
     HeartRateSpO2();
-    // Sửa: Trả về bool để báo thành công/thất bại, nhận đối tượng Wire
-    bool begin(TwoWire &wireInstance = Wire);
-    // Sửa: Nhận tham số priority, có giá trị mặc định từ Config.h
-    void startTask(UBaseType_t priority = TASK_PRIORITY_HEART_RATE);
-    void stopTask();
-    // Cung cấp giá trị ĐÃ ĐƯỢC ỔN ĐỊNH HÓA và giá trị thô cuối cùng
-    void getData(int& stableHeartRate, int& stableSpo2, long& lastIrValue, long& lastRedValue);
+    bool begin(TwoWire &wireInstance = Wire); // Khởi tạo cảm biến và module
+    void startTask(UBaseType_t priority = TASK_PRIORITY_HEART_RATE); // Bắt đầu task xử lý
+    void stopTask(); // Dừng task và tắt cảm biến
+    // Cung cấp giá trị HR, SpO2 (đã ổn định nếu có logic), và giá trị IR/Red thô cuối cùng
+    void getData(int& heartRate, int& spo2, long& irValue, long& redValue);
 
 private:
-    MAX30105 particleSensor; // Hoặc MAX30102 nếu dùng chip đó
+    MAX30102_Custom sensor; // Đối tượng driver cấp thấp cho MAX30102
+    Pulse_Custom pulseIR;   // Đối tượng xử lý xung cho kênh IR (chủ yếu cho HR)
+    Pulse_Custom pulseRed;  // Đối tượng xử lý xung cho kênh Red (cần cho SpO2)
+    MAFilter_Custom bpmSmoother; // Bộ lọc làm mịn giá trị BPM tính được
+
     TwoWire* _wire;          // Con trỏ tới đối tượng I2C bus đang sử dụng
     TaskHandle_t taskHandle; // Handle cho Task FreeRTOS
-    SemaphoreHandle_t dataMutex; // Mutex bảo vệ dữ liệu cục bộ
+    SemaphoreHandle_t dataMutex; // Mutex bảo vệ dữ liệu cục bộ được chia sẻ
 
-    // --- Trạng thái Cảm biến và Task ---
-    bool sensorReady;       // Cảm biến đã được khởi tạo thành công chưa?
+    bool sensorReady;       // Cờ báo cảm biến đã được khởi tạo và sẵn sàng
 
-    // --- Dữ liệu Thô và Trạng thái Tính toán HR ---
-    byte rates[4];          // Buffer lưu 4 giá trị BPM gần nhất (từ ví dụ)
-    byte rateSpot;          // Index hiện tại trong buffer rates
-    unsigned long lastBeat; // Thời điểm (ms) của nhịp đập cuối cùng được phát hiện
+    // --- Dữ liệu Cuối cùng để Cung cấp ra ngoài ---
+    int heartRateFinal;     // Giá trị nhịp tim cuối cùng (BPM)
+    int spo2Final;          // Giá trị SpO2 cuối cùng (%)
+    long irValueRawLast;    // Giá trị IR thô cuối cùng đọc được từ cảm biến
+    long redValueRawLast;   // Giá trị Red thô cuối cùng đọc được từ cảm biến
 
-    // --- Dữ liệu Thô và Trạng thái Tính toán SpO2 ---
-    float spo2_redDC;       // Thành phần DC ước tính của tín hiệu Red
-    float spo2_irDC;        // Thành phần DC ước tính của tín hiệu IR
+    // --- Biến trạng thái cho thuật toán HR ---
+    unsigned long lastBeatTimestampMs; // Thời điểm (ms) của nhịp đập cuối cùng được phát hiện
 
-    // --- Dữ liệu Cuối cùng (Ổn định & Thô) ---
-    int heartRateStable;    // Giá trị nhịp tim ổn định cuối cùng (BPM)
-    int spo2Stable;         // Giá trị SpO2 ổn định cuối cùng (%)
-    long irValueLocal;      // Giá trị IR thô cuối cùng đọc được
-    long redValueLocal;     // Giá trị Red thô cuối cùng đọc được
-
-    // --- Bộ đệm và Trạng thái Ổn định hóa ---
-    static const int STABLE_BUFFER_SIZE = 5; // Kích thước bộ đệm ổn định (có thể điều chỉnh)
-    int hrBuffer[STABLE_BUFFER_SIZE];        // Buffer cho HR
-    int spo2Buffer[STABLE_BUFFER_SIZE];      // Buffer cho SpO2
-    byte hrBufferIndex;                      // Index ghi tiếp theo cho buffer HR
-    byte spo2BufferIndex;                     // Index ghi tiếp theo cho buffer SpO2
-    byte hrValidCount;                       // Số lượng mẫu HR hợp lệ trong buffer
-    byte spo2ValidCount;                     // Số lượng mẫu SpO2 hợp lệ trong buffer
-    bool hrIsStable;                         // Cờ báo HR có ổn định không
-    bool spo2IsStable;                       // Cờ báo SpO2 có ổn định không
-
-    // --- Ngưỡng Ổn định (Có thể định nghĩa trong Config.h nếu muốn) ---
-    // Ngưỡng này có thể cần tinh chỉnh dựa trên thực tế
-    static const int HR_STABILITY_THRESHOLD = 3;  // Chênh lệch tối đa cho phép trong buffer HR
-    static const int SPO2_STABILITY_THRESHOLD = 2; // Chênh lệch tối đa cho phép trong buffer SpO2
-    static const byte MIN_VALID_FOR_STABLE = 3; // Số mẫu hợp lệ tối thiểu để đánh giá ổn định
+    // --- Logic Ổn định hóa (Tùy chọn - có thể thêm sau nếu cần) ---
+    // (Bỏ qua các biến buffer ổn định ở bước này để tập trung vào thuật toán chính)
+    // bool hrIsStable;
+    // bool spo2IsStable;
 
     // --- Hàm Private ---
     static void taskFunction(void* pvParameters); // Hàm thực thi của Task
-    void updateSensor();                          // Hàm chính đọc và xử lý dữ liệu cảm biến
-    float lowPassFilter(float input, float previous, float alpha); // Hàm lọc thông thấp
-    float calculateSpO2(long redValue, long irValue); // Hàm tính SpO2 thô (dùng biến thành viên)
-    void checkHrStability(int currentHr);           // Hàm kiểm tra và cập nhật ổn định HR
-    void checkSpo2Stability(int currentSpo2);        // Hàm kiểm tra và cập nhật ổn định SpO2
+    void updateSensorData();                     // Hàm chính đọc và xử lý dữ liệu cảm biến
 };
 
 #endif // HEART_RATE_SPO2_H

@@ -277,7 +277,6 @@ void BluetoothManager::sendData() {
     }
 }
 
-
 // isWifiConnected() (Giữ nguyên)
 bool BluetoothManager::isWifiConnected() {
     // Trả về trạng thái được cập nhật bởi task/event handler
