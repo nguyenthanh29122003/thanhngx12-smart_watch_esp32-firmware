@@ -1,3 +1,4 @@
+// include/DisplayManager.h
 #ifndef DISPLAY_MANAGER_H
 #define DISPLAY_MANAGER_H
 
@@ -19,6 +20,7 @@
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 #include "Config.h"
+#include "BluetoothManager.h"
 
 // --- DISPLAY DIMENSIONS ---
 // Modified for horizontal layout
@@ -85,6 +87,7 @@ typedef enum {
 typedef enum {
     SCREEN_MODE_WATCHFACE = 0,
     SCREEN_MODE_DASHBOARD,
+    SCREEN_MODE_NAVIGATION,
     SCREEN_MODE_HEALTH,
     SCREEN_MODE_ENVIRONMENT,
     SCREEN_MODE_SETTINGS,
@@ -105,7 +108,8 @@ public:
                     float temperature, float pressure,
                     float ax, float ay, float az,
                     float gx, float gy, float gz,
-                    const struct tm* timeinfo, bool timeInitialized);
+                    const struct tm* timeinfo, bool timeInitialized,
+                    const NavigationInfo& navInfo);
 
     void toggleScreen();
     void switchDisplayMode();
@@ -147,6 +151,7 @@ private:
     float pressureLocal;
     float axLocal, ayLocal, azLocal;
     float gxLocal, gyLocal, gzLocal;
+    NavigationInfo navInfoLocal;
     
     // Optimization variables
     String lastTimeString;
@@ -163,6 +168,9 @@ private:
     float lastGxIMU, lastGyIMU, lastGzIMU;
     bool lastWifiState;
     bool needsRedrawCurrentScreen;
+    String lastNavDirection;
+    String lastNavDistance;
+    String lastNavStreet;
 
     // Watchface variables
     float watchX[360], watchY[360];  // Coordinates for watchface
@@ -177,6 +185,7 @@ private:
     void drawHealthScreen(bool redrawStatic);
     void drawEnvironmentScreen(bool redrawStatic);
     void drawSettingsScreen(bool redrawStatic);
+    void drawNavigationScreen(bool redrawStatic);
 
     // Helper drawing functions
     void clearScreen();
@@ -188,6 +197,7 @@ private:
     void drawButton(int x, int y, int width, int height, const String& label, uint16_t color, bool pressed = false);
     void drawProgressBar(int x, int y, int width, int height, float percentage, uint16_t color);
     void drawWatchFace();
+    void drawNavigationIcon(int x, int y, int size, const String& direction, uint16_t color);
     
     // Animation helpers
     void updateAnimation();

@@ -180,8 +180,6 @@ void setup() {
 void loop() {
     // 1. Luôn gọi tick() cho các nút bấm
     button.tick();
-    // buttonMode.tick(); // Nếu có nút thứ 2
-    // powerButton.tick(); // Nếu có nút thứ 2
 
     // 2. Lấy dữ liệu từ các module
     stepCounter.getData(stepCount, distance, ax, ay, az, gx, gy, gz);
@@ -192,11 +190,13 @@ void loop() {
     // 3. Lấy trạng thái WiFi
     bool wifiConnected = ble.isWifiConnected(); // Hoặc WiFi.status() == WL_CONNECTED;
 
+    NavigationInfo navInfo = ble.getNavigationInfo();
+
     // 4. Cập nhật DisplayManager với TẤT CẢ dữ liệu
     display.updateData(wifiConnected, stepCount, distance, heartRate, spo2,
                        temperature, pressure, // <<< TRUYỀN DỮ LIỆU BMP
                        ax, ay, az, gx, gy, gz, // <<< TRUYỀN DỮ LIỆU IMU
-                       &currentTime, timeInitialized);
+                       &currentTime, timeInitialized, navInfo);
 
     // 5. Chuẩn bị và gửi dữ liệu qua BLE
     char timeStr[40];
@@ -226,44 +226,4 @@ void loop() {
 
     // 7. Delay cho vòng lặp chính
     vTaskDelay(pdMS_TO_TICKS(20)); // Giữ delay ngắn để OneButton nhạy
-}  
-
-// #include <Wire.h>
-
-// #include "MAX30105.h"  //Get it here: http://librarymanager/All#SparkFun_MAX30105
-// MAX30105 particleSensor;
-
-// void setup()
-// {
-//   Serial.begin(9600);
-//   Serial.println("Initializing...");
-
-//   // Initialize sensor
-//   if (particleSensor.begin(Wire, I2C_SPEED_FAST) == false) //Use default I2C port, 400kHz speed
-//   {
-//     Serial.println("MAX30105 was not found. Please check wiring/power. ");
-//     while (1);
-//   }
-
-//   //The LEDs are very low power and won't affect the temp reading much but
-//   //you may want to turn off the LEDs to avoid any local heating
-//   particleSensor.setup(0); //Configure sensor. Turn off LEDs
-//   //particleSensor.setup(); //Configure sensor. Use 25mA for LED drive
-
-//   particleSensor.enableDIETEMPRDY(); //Enable the temp ready interrupt. This is required.
-// }
-
-// void loop()
-// {
-//   float temperature = particleSensor.readTemperature();
-
-//   Serial.print("temperatureC=");
-//   Serial.print(temperature, 4);
-
-//   float temperatureF = particleSensor.readTemperatureF(); //Because I am a bad global citizen
-
-//   Serial.print(" temperatureF=");
-//   Serial.print(temperatureF, 4);
-
-//   Serial.println();
-// }
+} 

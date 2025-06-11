@@ -1,4 +1,4 @@
-
+// src/DisplayManager.cpp
 #include "DisplayManager.h"
 #include "Config.h"
 #include <Arduino.h>
@@ -60,6 +60,9 @@ DisplayManager::DisplayManager()
     lastTempEnv(NAN), lastPresEnv(NAN), lastTimeEnv(""),
     lastAxIMU(NAN), lastAyIMU(NAN), lastAzIMU(NAN), lastGxIMU(NAN), lastGyIMU(NAN), lastGzIMU(NAN),
     lastWifiState(false),
+    lastNavDirection(""),
+    lastNavDistance(""),
+    lastNavStreet(""),
     needsRedrawCurrentScreen(true)
 {
   memset(&timeinfoLocal, 0, sizeof(timeinfoLocal));
@@ -149,7 +152,8 @@ void DisplayManager::updateData(bool wifiConnected,
                 float temperature, float pressure,
                 float ax, float ay, float az,
                 float gx, float gy, float gz,
-                const struct tm* timeinfo, bool timeInitialized) {
+                const struct tm* timeinfo, bool timeInitialized,
+                const NavigationInfo& navInfo)  {
   if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
     wifiConnectedLocal = wifiConnected;
     timeInitializedLocal = timeInitialized;
@@ -160,6 +164,7 @@ void DisplayManager::updateData(bool wifiConnected,
     temperatureLocal = temperature; pressureLocal = pressure;
     axLocal = ax; ayLocal = ay; azLocal = az;
     gxLocal = gx; gyLocal = gy; gzLocal = gz;
+    navInfoLocal = navInfo;
     xSemaphoreGive(dataMutex);
   } else { Serial.println("Timeout taking display data mutex in updateData!"); }
 }
@@ -259,6 +264,9 @@ void DisplayManager::forceRedraw() {
     lastTimeEnv = "";
     lastAxIMU = lastAyIMU = lastAzIMU = lastGxIMU = lastGyIMU = lastGzIMU = NAN;
     lastWifiState = !wifiConnectedLocal;
+    lastNavDirection = ""; 
+    lastNavDistance = ""; 
+    lastNavStreet = "";
     xSemaphoreGive(dataMutex);
   }
 }
@@ -299,13 +307,14 @@ void DisplayManager::updateDisplay() {
 
   // Call the drawing function for the current mode
   switch (localScreenMode) {
-    case SCREEN_MODE_WATCHFACE:     drawWatchFaceScreen(needsRedraw); break;
-    case SCREEN_MODE_DASHBOARD:     drawDashboardScreen(needsRedraw); break;
-    case SCREEN_MODE_HEALTH:        drawHealthScreen(needsRedraw); break;
-    case SCREEN_MODE_ENVIRONMENT:   drawEnvironmentScreen(needsRedraw); break;
-    case SCREEN_MODE_SETTINGS:      drawSettingsScreen(needsRedraw); break;
-    default: break;
-  }
+        case SCREEN_MODE_WATCHFACE:     drawWatchFaceScreen(needsRedraw); break;
+        case SCREEN_MODE_DASHBOARD:     drawDashboardScreen(needsRedraw); break;
+        case SCREEN_MODE_NAVIGATION:    drawNavigationScreen(needsRedraw); break;
+        case SCREEN_MODE_HEALTH:        drawHealthScreen(needsRedraw); break;
+        case SCREEN_MODE_ENVIRONMENT:   drawEnvironmentScreen(needsRedraw); break;
+        case SCREEN_MODE_SETTINGS:      drawSettingsScreen(needsRedraw); break;
+        default: break;
+    } 
 }
 
 // --- Screen Drawing Functions ---
@@ -1165,4 +1174,155 @@ bool DisplayManager::isScreenOn() const {
     xSemaphoreGive(dataMutex);
   }
   return isOn;
+}
+
+void DisplayManager::drawNavigationScreen(bool redrawStatic) {
+    // 1. Lấy dữ liệu an toàn từ mutex
+    NavigationInfo navInfo;
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        navInfo = navInfoLocal;
+        xSemaphoreGive(dataMutex);
+    } else {
+        return; // Không vẽ gì nếu không lấy được dữ liệu
+    }
+
+    // Lấy màu theo theme hiện tại
+    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    uint16_t textColor = (currentTheme == 0) ? DARK_TEXT : LIGHT_TEXT;
+    uint16_t secondaryTextColor = (currentTheme == 0) ? DARK_TEXT_SECONDARY : LIGHT_TEXT_SECONDARY;
+    uint16_t highlightColor = (currentTheme == 0) ? DARK_HIGHLIGHT : LIGHT_PRIMARY; // Dùng màu khác cho light theme
+
+    // 2. Vẽ lại các thành phần tĩnh nếu cần
+    if (redrawStatic) {
+        clearScreen();
+        drawHeader("Navigation");
+        drawFooter();
+        
+        // Reset các biến tối ưu hóa của màn hình này để buộc vẽ lại mọi thứ
+        lastNavDirection = "";
+        lastNavDistance = "";
+        lastNavStreet = "";
+    }
+
+    // 3. Hiển thị thông tin điều hướng
+    
+    // --- BỐ CỤC MÀN HÌNH ---
+    // Chia màn hình làm 2 phần: Trái (Icon) và Phải (Văn bản)
+    const int iconSectionWidth = 80;  // Chiều rộng cho khu vực icon
+    const int textSectionX = iconSectionWidth + 5; // Tọa độ X bắt đầu của khu vực văn bản
+
+    // --- VẼ ICON CHỈ DẪN (BÊN TRÁI) ---
+    // Chúng ta sẽ vẽ icon ở giữa khu vực bên trái
+    drawNavigationIcon(iconSectionWidth / 2, CENTER_Y, 60, navInfo.nextTurnDirection, highlightColor);
+
+    // --- VẼ THÔNG TIN VĂN BẢN (BÊN PHẢI) ---
+    // Tọa độ Y cho các dòng chữ, căn theo khu vực văn bản
+    int yPos = HEADER_HEIGHT + 18;
+
+    // Dòng 1: Khoảng cách đến lối rẽ
+    drawStringOptimized(navInfo.nextTurnDistance.isEmpty() ? "--" : navInfo.nextTurnDistance, 
+                        textSectionX, yPos, FONT_LARGE, 
+                        highlightColor, bgColor, TL_DATUM, // Dùng TL_DATUM để căn lề trái
+                        lastNavDistance, SCREEN_WIDTH - textSectionX, 30);
+
+    // Dòng 2: Chỉ dẫn rẽ
+    yPos += 30;
+    drawStringOptimized(navInfo.nextTurnDirection.isEmpty() ? "..." : navInfo.nextTurnDirection,
+                        textSectionX, yPos, FONT_SMALL_BOLD,
+                        textColor, bgColor, TL_DATUM,
+                        lastNavDirection, SCREEN_WIDTH - textSectionX, 20);
+
+    // Dòng 3: Tên đường
+    yPos += 22;
+    // Rút ngắn tên đường nếu quá dài để vừa màn hình
+    String street = navInfo.streetName;
+    if (street.length() > 25) {
+        street = street.substring(0, 22) + "...";
+    }
+    drawStringOptimized(street,
+                        textSectionX, yPos, FONT_SMALL,
+                        secondaryTextColor, bgColor, TL_DATUM,
+                        lastNavStreet, SCREEN_WIDTH - textSectionX, 20);
+
+    // --- VẼ THÔNG TIN PHỤ Ở GẦN FOOTER ---
+    String bottomInfo = "";
+    if (!navInfo.totalRemainingDistance.isEmpty()) {
+        bottomInfo += navInfo.totalRemainingDistance;
+    }
+    if (!navInfo.eta.isEmpty()) {
+        if (!bottomInfo.isEmpty()) {
+            bottomInfo += " - ";
+        }
+        bottomInfo += navInfo.eta;
+    }
+    
+    // Vẽ thông tin này ở giữa, ngay trên footer
+    String lastBottomInfo = ""; // Biến tạm thời vì hàm optimized yêu cầu
+    drawStringOptimized(bottomInfo, CENTER_X, SCREEN_HEIGHT - FOOTER_HEIGHT - 8, FONT_MONO_SMALL,
+                        secondaryTextColor, bgColor, BC_DATUM,
+                        lastBottomInfo, SCREEN_WIDTH - 10, 15);
+
+
+    // 4. Áp dụng hiệu ứng animation
+    if (animating) {
+        applyAnimationEffect(0, HEADER_HEIGHT, SCREEN_WIDTH, CONTENT_HEIGHT);
+    }
+}
+
+
+void DisplayManager::drawNavigationIcon(int x, int y, int size, const String& direction, uint16_t color) {
+    // Xóa vùng icon cũ trước khi vẽ
+    uint16_t bgColor = (currentTheme == 0) ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    tft.fillRect(x - size / 2, y - size / 2, size, size, bgColor);
+
+    // Chuyển chuỗi chỉ dẫn sang chữ thường để so sánh
+    String dirLower = direction;
+    dirLower.toLowerCase();
+
+    int half = size / 2;
+    int quarter = size / 4;
+    int eighth = size / 8;
+
+    if (dirLower.indexOf("left") != -1) {
+        // Mũi tên Rẽ Trái
+        tft.fillRect(x - half + quarter, y - eighth, half, quarter, color); // Thân ngang
+        tft.fillTriangle(x - quarter, y, x - half + quarter, y - half, x - half + quarter, y + half, color); // Đầu mũi tên
+    } else if (dirLower.indexOf("right") != -1) {
+        // Mũi tên Rẽ Phải
+        tft.fillRect(x - quarter, y - eighth, half, quarter, color); // Thân ngang
+        tft.fillTriangle(x + quarter, y, x + half - quarter, y - half, x + half - quarter, y + half, color); // Đầu mũi tên
+    } else if (dirLower.indexOf("straight") != -1 || dirLower.indexOf("continue") != -1) {
+        // Mũi tên Đi Thẳng
+        tft.fillRect(x - eighth, y - half, quarter, size, color); // Thân dọc
+        tft.fillTriangle(x, y - half, x - half, y - quarter, x + half, y - quarter, color); // Đầu
+    } else if (dirLower.indexOf("u-turn") != -1) {
+        // <<< SỬA LỖI: Icon U-turn mới (vẽ thủ công) >>>
+        // Vẽ phần cong bên trên
+        for (int i = 180; i <= 360; i++) {
+            float angleRad = radians(i);
+            int px = x + (half - quarter) * cos(angleRad);
+            int py = y - eighth + (half - quarter) * sin(angleRad);
+            tft.drawPixel(px, py, color);
+            tft.drawPixel(px, py-1, color); // Làm dày hơn
+        }
+        // Vẽ hai chân dọc
+        tft.fillRect(x - half, y - eighth, quarter, half, color);
+        tft.fillRect(x + half - quarter, y - eighth, quarter, half, color);
+        // Vẽ đầu mũi tên ở chân trái
+        tft.fillTriangle(x - half, y + half, x - half - eighth, y + half - quarter, x - half + eighth, y + half - quarter, color);
+
+    } else if (dirLower.indexOf("roundabout") != -1) {
+        // <<< SỬA LỖI: Icon Vòng xuyến mới (chỉ dùng hình tròn) >>>
+        int radius = size / 3;
+        tft.drawCircle(x, y, radius, color);
+        tft.drawCircle(x, y, radius - 1, color);
+        // Thêm một mũi tên nhỏ chỉ hướng đi vào vòng xuyến
+        tft.drawLine(x, y + radius, x, y + radius + quarter, color);
+        tft.fillTriangle(x, y + radius + quarter, x - eighth, y + radius + eighth, x + eighth, y + radius + eighth, color);
+
+    } else { // Trường hợp mặc định hoặc không rõ (ví dụ: "slight left", "exit")
+        // Dùng mũi tên đi thẳng làm mặc định
+        tft.fillRect(x - eighth, y - half, quarter, size, color); // Thân
+        tft.fillTriangle(x, y - half, x - half, y - quarter, x + half, y - quarter, color); // Đầu
+    }
 }
