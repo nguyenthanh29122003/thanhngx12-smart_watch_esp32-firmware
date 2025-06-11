@@ -184,87 +184,78 @@ void BluetoothManager::updateData(float ax, float ay, float az, int stepCount, i
 
 // ===== sendData() - BẮT BUỘC DÙNG GHÉP STRING =====
 void BluetoothManager::sendData() {
-    // Biến tạm để giữ giá trị khi mutex được giữ
-    float _ax, _ay, _az, _gx, _gy, _gz, _temp;
+    // Biến tạm để giữ giá trị khi mutex được giữ (giữ nguyên)
+    float _ax, _ay, _az, _gx, _gy, _gz, _temp, _pres;
     int _steps, _hr, _spo2;
     long _ir, _red;
-    float _pres; // Dùng float cho áp suất
     bool _wifi;
     String _timestamp;
 
-    // Lấy dữ liệu an toàn
+    // Lấy dữ liệu an toàn (giữ nguyên)
     if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        // ... (lấy giá trị vào các biến tạm) ...
         _ax = axLocal; _ay = ayLocal; _az = azLocal;
         _gx = gxLocal; _gy = gyLocal; _gz = gzLocal;
         _steps = stepCountLocal; _hr = heartRateLocal; _spo2 = spo2Local;
         _ir = irValueLocal; _red = redValueLocal;
-        _wifi = wifiConnectedLocal; // Lấy trạng thái đã được cập nhật trong task
+        _wifi = wifiConnectedLocal;
         _temp = temperatureLocal;
         _pres = pressureLocal;
         _timestamp = timestampLocal;
-        xSemaphoreGive(dataMutex); // Trả mutex sớm nhất có thể
+        xSemaphoreGive(dataMutex);
 
-        // --- Bắt đầu ghép chuỗi JSON ---
-        String jsonStr = "{";
-        char buffer[15]; // Buffer cho dtostrf
+        // --- Bắt đầu tạo chuỗi JSON với char array và snprintf ---
+        char jsonBuffer[512]; // Cấp phát một buffer đủ lớn trên stack
+        int len = 0; // Theo dõi độ dài chuỗi đã ghi
+
+        // Sử dụng snprintf để ghi vào buffer một cách an toàn, nó sẽ không ghi quá kích thước buffer
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "{");
 
         // IMU Data
-        dtostrf(_ax, 1, 2, buffer); jsonStr += "\"ax\":" + String(buffer); // Giảm width xuống 1 để tránh thừa khoảng trắng
-        dtostrf(_ay, 1, 2, buffer); jsonStr += ", \"ay\":" + String(buffer);
-        dtostrf(_az, 1, 2, buffer); jsonStr += ", \"az\":" + String(buffer);
-        dtostrf(_gx, 1, 2, buffer); jsonStr += ", \"gx\":" + String(buffer);
-        dtostrf(_gy, 1, 2, buffer); jsonStr += ", \"gy\":" + String(buffer);
-        dtostrf(_gz, 1, 2, buffer); jsonStr += ", \"gz\":" + String(buffer);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"ax\":%.2f,", _ax);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"ay\":%.2f,", _ay);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"az\":%.2f,", _az);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"gx\":%.2f,", _gx);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"gy\":%.2f,", _gy);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"gz\":%.2f,", _gz);
 
         // Sensor Data (Int/Long)
-        jsonStr += ", \"steps\":" + String(_steps);
-        jsonStr += ", \"hr\":" + String(_hr);
-        jsonStr += ", \"spo2\":" + String(_spo2);
-        jsonStr += ", \"ir\":" + String(_ir);
-        jsonStr += ", \"red\":" + String(_red);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"steps\":%d,", _steps);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"hr\":%d,", _hr);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"spo2\":%d,", _spo2);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"ir\":%ld,", _ir);
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"red\":%ld,", _red);
 
         // WiFi Status (Bool)
-        jsonStr += ", \"wifi\":" + String(_wifi ? "true" : "false"); // <<< Dùng "true"/"false" trực tiếp
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"wifi\":%s,", _wifi ? "true" : "false");
 
         // Temperature (Float, xử lý NAN)
-        jsonStr += ", \"temp\":"; // Thêm key trước
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"temp\":");
         if (!isnan(_temp)) {
-            dtostrf(_temp, 1, 1, buffer); // 1 chữ số thập phân, width 1
-            jsonStr += String(buffer);
+            len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "%.1f,", _temp);
         } else {
-             jsonStr += "null"; // <<< Gửi giá trị null JSON
+            len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "null,");
         }
 
         // Pressure (Float, xử lý NAN)
-        jsonStr += ", \"pres\":"; // Thêm key trước
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"pres\":");
         if (!isnan(_pres)) {
-             dtostrf(_pres, 1, 0, buffer); // 0 chữ số thập phân, width 1
-             jsonStr += String(buffer);
+            len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "%.0f,", _pres);
         } else {
-             jsonStr += "null"; // <<< Gửi giá trị null JSON
+            len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "null,");
         }
 
-        // Timestamp (String)
-        jsonStr += ", \"timestamp\":\""; // Mở ngoặc kép cho chuỗi timestamp
-        // <<< XỬ LÝ CHUỖI TIMESTAMP (QUAN TRỌNG) >>>
-        // Cần đảm bảo _timestamp không chứa ký tự đặc biệt gây lỗi JSON (như dấu ")
-        // Nếu _timestamp có thể là "Not initialized" hoặc tương tự, vẫn ổn
-        if (_timestamp.length() > 0) {
-            // TODO: Nếu cần, thêm bước escape các ký tự đặc biệt trong _timestamp
-            // Ví dụ đơn giản (có thể chưa đủ): _timestamp.replace("\"", "\\\"");
-            jsonStr += _timestamp;
-        }
-        jsonStr += "\""; // <<< ĐÓNG NGOẶC KÉP CHO TIMESTAMP >>>
-
-        jsonStr += "}"; // Kết thúc chuỗi JSON
-        // --- Kết thúc ghép chuỗi JSON ---
-
+        // Timestamp (String) - Đây là trường cuối cùng, không có dấu phẩy
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "\"timestamp\":\"%s\"", _timestamp.c_str());
+        
+        len += snprintf(jsonBuffer + len, sizeof(jsonBuffer) - len, "}");
+        // --- Kết thúc tạo chuỗi JSON ---
 
         // Gửi qua BLE
         if (pDataCharacteristic != nullptr && pServer != nullptr && pServer->getConnectedCount() > 0) {
             try {
-                // Serial.println("Sending JSON (String): " + jsonStr); // Debug
-                pDataCharacteristic->setValue(jsonStr);
+                // Serial.printf("Sending JSON (char*): %s\n", jsonBuffer); // Debug
+                pDataCharacteristic->setValue((uint8_t*)jsonBuffer, len); // Gửi dưới dạng byte array
                 pDataCharacteristic->notify();
             } catch (const std::exception& e) {
                 Serial.printf("BLE Send Exception: %s\n", e.what());
