@@ -25,6 +25,7 @@
 #define CHARACTERISTIC_UUID "12345678-1234-1234-1234-123456789013"
 #define WIFI_CONFIG_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 #define STATUS_UUID         "abce0001-ef00-1234-5678-90abcdef1234"
+#define NAVIGATION_UUID     "a0a1a2a3-a4a5-a6a7-a8a9-aaabacadaeaf" 
 
 // --- StepCounter constants (QMI8658C) ---
 #define STEP_LENGTH 0.75f    // Chiều dài bước chân (m)

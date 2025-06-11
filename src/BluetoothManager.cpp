@@ -8,10 +8,21 @@
 void MyServerCallbacks::onConnect(NimBLEServer* pServer) {
     Serial.println("BLE Device connected");
 }
+
 void MyServerCallbacks::onDisconnect(NimBLEServer* pServer) {
     Serial.println("BLE Device disconnected - Restarting advertising");
     vTaskDelay(pdMS_TO_TICKS(500));
     NimBLEDevice::startAdvertising();
+}
+
+void NavigationCallbacks::onWrite(NimBLECharacteristic* pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+    if (value.length() > 0) {
+        Serial.print("[BLE] Received Navigation Data: ");
+        Serial.println(value.c_str());
+        // Gọi hàm của manager để xử lý dữ liệu JSON này
+        p_manager->processNavigationData(value.c_str());
+    }
 }
 
 // --- WifiConfigCallbacks (Sửa để gọi initWiFi và setStatus) ---
@@ -67,9 +78,11 @@ BluetoothManager::BluetoothManager(TimeManager* timeManager)
       timestampLocal("Not initialized"),
       temperatureLocal(NAN), pressureLocal(NAN), // Khởi tạo temp/pres
       statusLocal("{\"status\":\"initializing\"}"),
-      wifiSSID(""), wifiPassword(""), timeManager(timeManager)
+      wifiSSID(""), wifiPassword(""), timeManager(timeManager),
+      pNavigationCharacteristic(nullptr)
 {
     dataMutex = xSemaphoreCreateMutex();
+    navInfoLocal.clear();
     if (dataMutex == NULL) { Serial.println("CRITICAL: Failed to create BLE data mutex!"); }
 }
 
@@ -111,12 +124,61 @@ void BluetoothManager::setupBLE() {
     pStatusCharacteristic->createDescriptor("2901")->setValue("Device Status JSON");
     pStatusCharacteristic->setValue(statusLocal); // Đặt giá trị ban đầu
 
+    pNavigationCharacteristic = pService->createCharacteristic(
+        NAVIGATION_UUID,
+        NIMBLE_PROPERTY::WRITE
+    );
+    pNavigationCharacteristic->setCallbacks(new NavigationCallbacks(this));
+    pNavigationCharacteristic->createDescriptor("2901")->setValue("Navigation Data JSON");
+    Serial.println("Created Navigation Characteristic: " NAVIGATION_UUID);
+
     // Start Service & Advertising
     pService->start();
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->start();
     Serial.println("BLE Service Started and Advertising...");
+}
+
+void BluetoothManager::processNavigationData(const char* jsonData) {
+    StaticJsonDocument<512> doc; // Tạo một JSON document với kích thước phù hợp
+    DeserializationError error = deserializeJson(doc, jsonData);
+
+    if (error) {
+        Serial.print("[BLE] Navigation data JSON parse failed: ");
+        Serial.println(error.c_str());
+        // Gửi trạng thái lỗi về cho app nếu cần
+        setStatus("{\"error\":\"nav_json_parse_failed\"}");
+        return;
+    }
+
+    // Lấy mutex để cập nhật an toàn struct navInfoLocal
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        // Sử dụng toán tử `|` để cung cấp giá trị mặc định nếu key không tồn tại trong JSON
+        navInfoLocal.nextTurnDirection = doc["nextTurnDirection"] | "";
+        navInfoLocal.nextTurnDistance = doc["nextTurnDistance"] | "";
+        navInfoLocal.streetName = doc["streetName"] | "";
+        navInfoLocal.totalRemainingDistance = doc["totalRemainingDistance"] | "";
+        navInfoLocal.eta = doc["eta"] | "";
+        
+        xSemaphoreGive(dataMutex);
+        Serial.println("[BLE] Updated local navigation info.");
+    } else {
+        Serial.println("[BLE] CRITICAL: Failed to take dataMutex in processNavigationData!");
+    }
+}
+
+NavigationInfo BluetoothManager::getNavigationInfo() {
+    NavigationInfo info;
+    if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        info = navInfoLocal; // Sao chép dữ liệu
+        xSemaphoreGive(dataMutex);
+    } else {
+        Serial.println("[BLE] Timeout taking dataMutex in getNavigationInfo!");
+        // Trả về struct rỗng nếu không lấy được mutex
+        info.clear();
+    }
+    return info;
 }
 
 // --- startTask() ---

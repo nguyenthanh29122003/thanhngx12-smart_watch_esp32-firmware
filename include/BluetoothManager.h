@@ -3,7 +3,7 @@
 #define BLUETOOTH_MANAGER_H
 
 #include <NimBLEDevice.h>
-// Bỏ #include <ArduinoJson.h> nếu không dùng
+#include <ArduinoJson.h>
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -12,6 +12,14 @@
 #include "TimeManager.h"
 
 class BluetoothManager; // Forward declaration
+
+class NavigationCallbacks : public NimBLECharacteristicCallbacks {
+public:
+    NavigationCallbacks(BluetoothManager* manager) : p_manager(manager) {}
+    void onWrite(NimBLECharacteristic* pCharacteristic) override;
+private:
+    BluetoothManager* p_manager;
+};
 
 // --- WifiConfigCallbacks (Giữ nguyên) ---
 class WifiConfigCallbacks : public NimBLECharacteristicCallbacks {
@@ -26,6 +34,22 @@ private:
 class MyServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer) override;
     void onDisconnect(NimBLEServer* pServer) override;
+};
+
+struct NavigationInfo {
+    String nextTurnDirection;      // "Rẽ trái"
+    String nextTurnDistance;       // "200 m"
+    String streetName;             // "Đ. Trần Hưng Đạo"
+    String totalRemainingDistance; // "5.4 km"
+    String eta;                    // "15 phút"
+    // Hàm để reset dữ liệu
+    void clear() {
+        nextTurnDirection = "";
+        nextTurnDistance = "";
+        streetName = "";
+        totalRemainingDistance = "";
+        eta = "";
+    }
 };
 
 
@@ -44,12 +68,14 @@ public:
 
     // Hàm cập nhật trạng thái (cho Status Characteristic)
     void setStatus(const String &status);
+    NavigationInfo getNavigationInfo();
 
 private:
     NimBLEServer* pServer;
     NimBLECharacteristic* pDataCharacteristic;
     NimBLECharacteristic* pWifiConfigCharacteristic;
     NimBLECharacteristic* pStatusCharacteristic; // Khai báo Status Char
+    NimBLECharacteristic* pNavigationCharacteristic;
     TaskHandle_t taskHandle;
     SemaphoreHandle_t dataMutex; // Mutex bảo vệ dữ liệu local
 
@@ -72,6 +98,8 @@ private:
 
     // --- Con trỏ phụ thuộc ---
     TimeManager* timeManager;
+    
+    NavigationInfo navInfoLocal;
 
     // --- Hàm private ---
     static void taskFunction(void* pvParameters);
@@ -80,10 +108,12 @@ private:
     // void connectWiFi();                 // <-- HÀM CŨ, SẼ THAY BẰNG initWiFi + event handler
     static void wifiEventHandler(WiFiEvent_t event, WiFiEventInfo_t info); // Static handler
     void initWiFi(); // Hàm đăng ký event và bắt đầu kết nối non-blocking
+    void processNavigationData(const char* jsonData);
 
     // Friend class để callback truy cập được
     friend class WifiConfigCallbacks;
-    friend class MyServerCallbacks; // Cho phép callback server truy cập (nếu cần)
+    friend class MyServerCallbacks;
+    friend class NavigationCallbacks;
 };
 
 #endif // BLUETOOTH_MANAGER_H
