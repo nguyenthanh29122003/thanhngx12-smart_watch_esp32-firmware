@@ -2,257 +2,228 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <EEPROM.h>
-#include "Config.h"       // Đảm bảo Config.h có I2C_MUTEX_TIMEOUT_MS
+#include "Config.h"
 #include "DisplayManager.h"
-#include "StepCounter.h"    // Đảm bảo StepCounter.cpp đã dùng i2cMutex
-#include "HeartRateSpO2.h"  // Đảm bảo HeartRateSpO2.cpp đã dùng i2cMutex
+#include "StepCounter.h"
+#include "HeartRateSpO2.h"
 #include "BluetoothManager.h"
 #include "TimeManager.h"
+#include "BarometerManager.h" // <<< THÊM INCLUDE BMP280
+#include "BatteryManager.h"
+#include <OneButton.h>      // <<< Đã có
+#include <EEPROM.h>
+
 #define STEP_COUNT_ADDR 0
-// Định nghĩa Mutex I2C toàn cục
+
+// --- Mutex ---
 SemaphoreHandle_t i2cMutex = NULL; // Khởi tạo là NULL
-// Khởi tạo các đối tượng quản lý
+
+// --- Khởi tạo Đối tượng Quản lý ---
 DisplayManager display;
 StepCounter stepCounter;
 HeartRateSpO2 heartRateSpO2;
+BarometerManager barometer; // <<< THÊM ĐỐI TƯỢNG BMP280
 TimeManager timeManager;
-BluetoothManager ble(&timeManager); // Truyền TimeManager vào BLE
-// Biến global để lưu dữ liệu tạm thời
+BluetoothManager ble(&timeManager);
+
+// --- Biến Global Lưu Dữ liệu Tạm thời ---
 int stepCount = 0;
-float distance = 0;
+float distance = 0.0f;
 int heartRate = 0;
-int spo2 = 0;
-float ax = 0, ay = 0, az = 0;
-float gx = 0, gy = 0, gz = 0;
+int spo2 = -999; // Khởi tạo giá trị không hợp lệ
+float temperature = NAN; // Khởi tạo là Not-a-Number
+float pressure = NAN;    // Khởi tạo là Not-a-Number
+float ax = 0.0f, ay = 0.0f, az = 0.0f;
+float gx = 0.0f, gy = 0.0f, gz = 0.0f;
 long irValue = 0, redValue = 0;
 struct tm currentTime;
 bool timeInitialized = false;
-// bool screenOn = true; // <-- Biến này không cần ở đây nữa, DisplayManager tự quản lý
-int lastDay = -1;
-// unsigned long lastSendTime = 0; // Không thấy dùng
-// const unsigned long sendInterval = 1000; // Không thấy dùng
-// Phần xử lý nút bấm
-TaskHandle_t buttonTaskHandle = NULL;
-SemaphoreHandle_t buttonSemaphore;
-volatile unsigned long lastPressTime = 0;
-volatile int pressCount = 0; // Biến đếm số lần nhấn từ ISR
-// ISR Nút bấm (Giữ nguyên logic cũ)
-void IRAM_ATTR buttonISR() {
-unsigned long currentMillis = millis(); // Đổi tên biến để tránh trùng
-if (currentMillis - lastPressTime > 50) { // Debounce 50ms
-pressCount++;
-lastPressTime = currentMillis;
-// Đánh thức ButtonTask
-BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
-if (xHigherPriorityTaskWoken) {
-portYIELD_FROM_ISR();
+int lastDay = -1; // Theo dõi ngày để reset bước chân
+
+// --- Khởi tạo OneButton ---
+// !!! QUAN TRỌNG: Sửa lại chân GPIO cho đúng với board ESP32-S3 của bạn !!!
+// Nếu chỉ có nút BOOT ở GPIO 0:
+OneButton button(BUTTON_PIN, true, true); // Giả sử BUTTON_PIN = 0 trong Config.h
+BatteryManager batteryManager((gpio_num_t)BATT_ADC_PIN, BATT_VOLTAGE_DIVIDER_RATIO);
+// Biến trạng thái cho nhấn giữ reboot
+volatile bool isRebootHandled = false;
+
+// --- Hàm Callback cho Nút Bấm (Ví dụ cho 1 nút) ---
+void handleClick() {
+    Serial.println("Button Click() - Toggling Screen");
+    display.toggleScreen();
 }
+
+void handleDoubleClick() {
+    Serial.println("Button DoubleClick() - Switching Display Mode");
+    display.switchDisplayMode();
 }
+
+void handleLongPressStart() {
+     Serial.println("Button LongPressStart()");
+     isRebootHandled = false; // Reset cờ khi bắt đầu nhấn giữ mới
+     // Có thể thêm hành động khác ở đây nếu muốn (ví dụ: toggle theme)
+     display.toggleTheme();
 }
-void buttonTask(void* pvParameters) {
-unsigned long pressStartTime = 0;
-bool heldActionDone = false; // Cờ đánh dấu đã xử lý nhấn giữ (1s hoặc 2s)
-while (true) {
-    // Chờ tín hiệu nhấn nút từ ISR
-    if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {
-        pressStartTime = millis(); // Ghi lại thời điểm bắt đầu nhấn
-        heldActionDone = false;    // Reset cờ xử lý nhấn giữ
-        Serial.println("Button Pressed Down");
 
-        // Vòng lặp kiểm tra khi nút còn được giữ
-        while (digitalRead(BUTTON_DISPLAY) == LOW) {
-            unsigned long heldDuration  = millis() - pressStartTime; // Thời gian đã giữ
-
-            // Ưu tiên kiểm tra nhấn giữ lâu (> 2 giây) để reset
-            if (!heldActionDone && heldDuration  >= 2000) {
-                Serial.println("Button Held (>2s) - Resetting system...");
-                heldActionDone = true; // Đánh dấu đã xử lý
-                ESP.restart();
-                // Không cần break vì restart sẽ không quay lại
-            }
-            // Kiểm tra nhấn giữ vừa (1 giây) để bật/tắt màn hình
-            else if (!heldActionDone && heldDuration  >= 1000) {
-                Serial.println("Button Held (>=1s) - Toggling Screen");
-                display.toggleScreen(); // Gọi hàm toggle của DisplayManager
-                heldActionDone = true; // Đánh dấu đã xử lý
-                // Tiếp tục giữ vòng lặp để kiểm tra xem có thành nhấn giữ 2s không
-                // Hoặc có thể break nếu muốn hành động ngay khi đủ 1s
-                // break;
-            }
-
-            vTaskDelay(50 / portTICK_PERIOD_MS); // Kiểm tra lại sau 50ms
-        } // Kết thúc while giữ nút
-
-        // Nút đã được thả ra
-        Serial.println("Button Released");
-
-        // Nếu chưa thực hiện hành động nhấn giữ nào (nghĩa là nhấn ngắn)
-        if (!heldActionDone) {
-            // Kiểm tra thời gian nhấn thực tế để tránh lỗi do debounce ISR
-            if (millis() - pressStartTime < 800) { // Coi là nhấn ngắn nếu dưới 800ms
-                 Serial.println("Short Press detected - Toggling Theme");
-                 display.toggleTheme(); // Gọi hàm đổi theme
-             } else {
-                 // Nếu thời gian > 800ms nhưng < 1000ms, có thể không làm gì
-                 Serial.println("Press duration between short and hold, ignoring.");
-             }
-        }
-        // Reset trạng thái sau khi xử lý xong
-        heldActionDone = false;
-        // Không cần reset pressCount nữa vì không dùng
-    } // Kết thúc if xSemaphoreTake
-} // Kết thúc while(true)
-
+void handleDuringLongPress() {
+    // Dùng button.getPressedMs() thay vì powerButton
+    if (!isRebootHandled && button.getPressedMs() >= 2000) { // Giữ 2 giây
+        Serial.println("Button DuringLongPress() >= 2s - Rebooting...");
+        isRebootHandled = true;
+        ESP.restart();
+    }
 }
-// ===== HÀM SETUP ĐÃ SỬA =====
+void handleLongPressStop() {
+     Serial.println("Button LongPressStop()");
+     isRebootHandled = false; // Reset cờ khi nhả nút
+}
+
+
+// ===================== SETUP =====================
 void setup() {
-pinMode(BUTTON_DISPLAY, INPUT_PULLUP);
-buttonSemaphore = xSemaphoreCreateBinary();
-if (buttonSemaphore == NULL) {
-Serial.println("CRITICAL: Failed to create button semaphore!"); while(1);
-}
-attachInterrupt(digitalPinToInterrupt(BUTTON_DISPLAY), buttonISR, FALLING);
-Serial.begin(921600); // Giữ tốc độ cao nếu ổn định
-while (!Serial) delay(10);
-delay(1000); // Đợi Serial
-Serial.println("\n\n--- System Starting (Multi-Screen Version) ---");
+    Serial.begin(921600);
+    delay(1000);
+    Serial.println("\n\n--- ESP32-S3 Smartwatch Firmware Starting ---");
 
-// ----> THÊM DELAY ỔN ĐỊNH BAN ĐẦU <----
-Serial.println("Initial stabilization delay (500ms)...");
-delay(500);
+    // ----> 1. BẬT NGUỒN NGOẠI VI (Quan trọng!) <----
+    Serial.println("Enabling external power...");
+    #if defined(TFT_I2C_POWER) // Kiểm tra macro từ board definition
+        pinMode(TFT_I2C_POWER, OUTPUT);
+        digitalWrite(TFT_I2C_POWER, HIGH);
+        Serial.printf("Set TFT_I2C_POWER (Pin %d) HIGH\n", TFT_I2C_POWER);
+    #else
+        Serial.println("Warning: TFT_I2C_POWER pin not defined for this board! Check connections.");
+        // Nếu không có, bạn cần tìm chân GPIO đúng và define trong Config.h
+        // pinMode(TFT_I2C_POWER_PIN, OUTPUT);
+        // digitalWrite(TFT_I2C_POWER_PIN, HIGH);
+    #endif
+    delay(50); // Chờ nguồn ổn định
 
-// ----> KHỞI TẠO I2C VÀ EEPROM <----
-Wire.begin();
-Wire.setClock(50000); // Giữ tốc độ I2C 50kHz
-Serial.println("I2C Clock set to 50kHz.");
-if (!EEPROM.begin(512)) {
-    Serial.println("Failed to initialise EEPROM!");
-} else {
-    Serial.println("EEPROM initialized.");
-}
-
-// ----> THÊM DELAY TRƯỚC KHI INIT I2C DEVICES <----
-Serial.println("Delay before I2C init (250ms)...");
-delay(250);
-
-// ----> TẠO I2C MUTEX <----
-i2cMutex = xSemaphoreCreateMutex();
-if (i2cMutex == NULL) {
-    Serial.println("CRITICAL: Failed to create I2C Mutex!");
-    while(1);
-} else {
-     Serial.println("I2C Mutex created.");
-}
-
-Serial.println("Scanning I2C bus...");
-byte foundCount = 0;
-for (byte addr = 1; addr < 127; addr++) {
-    Wire.beginTransmission(addr);
-    byte error = Wire.endTransmission();
-    if (error == 0) {
-        Serial.printf("Found device at 0x%02X\n", addr);
-        foundCount++;
+    Serial.println("Initializing Battery Manager...");
+    if (!batteryManager.begin()) {
+        Serial.println("!!! WARNING: Battery Manager initialization failed!");
     }
+
+    // ----> 2. KHỞI TẠO I2C, EEPROM, MUTEX <----
+    Wire.begin(); // Dùng chân I2C mặc định của board S3 (Cần xác nhận nếu cần)
+    Wire.setClock(50000); // Giữ 50kHz cho ổn định
+    Serial.println("I2C Clock set to 50kHz.");
+    if (!EEPROM.begin(EEPROM_SIZE)) Serial.println("Failed to initialise EEPROM!");
+    else Serial.println("EEPROM initialized.");
+
+    i2cMutex = xSemaphoreCreateMutex();
+    if (i2cMutex == NULL) { Serial.println("CRITICAL: Failed to create I2C Mutex!"); while(1); }
+    else Serial.println("I2C Mutex created.");
+
+    // ----> 3. DELAY VÀ QUÉT I2C <----
+    Serial.println("Delay before I2C scan (250ms)...");
+    delay(250);
+    Serial.println("Scanning I2C bus...");
+    byte foundCount = 0;
+    for (byte addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("I2C Device Found at address 0x%02X\n", addr);
+            foundCount++;
+        }
+    }
+    Serial.printf("I2C Scan complete. Found %d devices.\n", foundCount);
+    // ---> !! SO SÁNH KẾT QUẢ QUÉT VỚI ĐỊA CHỈ TRONG CONFIG.H !! <---
+
+    // ----> 4. KHỞI TẠO CÁC MODULE <----
+    Serial.println("Initializing Display...");
+    display.begin();
+
+    Serial.println("Initializing Core Modules...");
+    bool stepSensorOk = stepCounter.begin();      // Lưu kết quả init
+    bool hrSensorOk = heartRateSpO2.begin();    // Lưu kết quả init
+    bool baroSensorOk = barometer.begin();        // Lưu kết quả init
+    ble.begin();
+    timeManager.begin();
+
+    // In trạng thái khởi tạo cảm biến
+    Serial.printf("Sensor Init Status: QMI8658C=%s, MAX3010x=%s, BMP280=%s\n",
+                  stepSensorOk ? "OK" : "FAIL",
+                  hrSensorOk ? "OK" : "FAIL",
+                  baroSensorOk ? "OK" : "FAIL");
+
+    // ----> 5. GẮN CALLBACK CHO NÚT BẤM <----
+    Serial.println("Attaching Button callbacks (using OneButton)...");
+    // Gắn cho 1 nút (button)
+    button.attachClick(handleClick);                 // Nhấn đơn -> Toggle Screen
+    button.attachDoubleClick(handleDoubleClick);       // Nhấn đúp -> Switch Mode
+    button.attachLongPressStart(handleLongPressStart); // Bắt đầu nhấn giữ
+    button.attachDuringLongPress(handleDuringLongPress); // Đang nhấn giữ -> Reboot
+    button.attachLongPressStop(handleLongPressStop);     // Nhả nút sau khi giữ
+    button.setDebounceMs(50);       // Thời gian debounce
+    button.setClickMs(400);         // Thời gian tối đa cho 1 click (trước khi thành giữ)
+    button.setPressMs(1000);        // Thời gian giữ để kích hoạt LongPressStart/DuringLongPress
+    // Nếu dùng 2 nút thì gắn callback tương ứng cho buttonMode và powerButton
+
+    // ----> 6. KHỞI ĐỘNG CÁC TASK <----
+    Serial.println("Starting Tasks...");
+    if (hrSensorOk) heartRateSpO2.startTask(TASK_PRIORITY_HEART_RATE); // Chỉ start nếu init OK
+    if (stepSensorOk) stepCounter.startTask(TASK_PRIORITY_STEP); // Chỉ start nếu init OK
+    if (baroSensorOk) barometer.startTask(1); // Ưu tiên thấp cho barometer
+    ble.startTask(1);             // Ưu tiên thấp/trung bình cho BLE
+    timeManager.startTask();
+    display.startTask(1);           // Ưu tiên thấp/trung bình cho display
+
+    batteryManager.startTask(1);
+
+    Serial.printf("Free heap at start: %d bytes\n", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    Serial.println("--- Setup Complete ---");
 }
-Serial.printf("I2C Scan complete. Found %d devices.\n", foundCount);
 
-
-// ----> KHỞI TẠO CÁC MODULE <----
-Serial.println("Initializing Display...");
-display.begin(); // DisplayManager Init
-
-// Init cảm biến với mutex
-if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE) { // Chờ vô hạn khi khởi tạo
-     Serial.println("Initializing StepCounter (MPU6050)...");
-     stepCounter.begin(); // Đảm bảo hàm này dùng mutex bên trong nếu cần
-     Serial.println("Initializing HeartRateSpO2 (MAX3010x)...");
-     heartRateSpO2.begin(); // Đảm bảo hàm này dùng mutex bên trong nếu cần
-     xSemaphoreGive(i2cMutex);
-     Serial.println("Sensor initialization complete.");
-} else {
-      Serial.println("CRITICAL: Failed to take I2C Mutex during sensor init!");
-      // Nên dừng lại ở đây nếu không khởi tạo được cảm biến
-      while(1);
-}
-
-Serial.println("Initializing Bluetooth...");
-ble.begin();
-
-Serial.println("Initializing TimeManager...");
-timeManager.begin();
-
-
-// ----> KHỞI ĐỘNG CÁC TASK <----
-Serial.println("Starting Tasks...");
-stepCounter.startTask();
-heartRateSpO2.startTask(); // Đảm bảo task này được bật
-ble.startTask();
-timeManager.startTask();
-display.startTask(); // Task cho DisplayManager
-
-// Tạo Button Task với độ ưu tiên cao
-xTaskCreate(buttonTask, "ButtonTask", 2048, NULL, 3, &buttonTaskHandle);
-if (buttonTaskHandle == NULL) {
-    Serial.println("Error creating Button Task!");
-}
-
-// Khôi phục bước chân (StepCounter::begin đã làm, nhưng đọc lại ở đây cũng không sao)
-stepCount = EEPROM.readInt(STEP_COUNT_ADDR);
-Serial.printf("Restored step count (in setup): %d\n", stepCount);
-
-
-Serial.printf("Free heap at start: %d bytes\n", heap_caps_get_free_size(MALLOC_CAP_8BIT));
-Serial.println("--- Setup Complete ---");
-
-}
-// ===== HÀM LOOP ĐÃ SỬA =====
+// ===================== LOOP =====================
 void loop() {
-// 1. Lấy dữ liệu từ các module cảm biến và thời gian
-stepCounter.getData(stepCount, distance, ax, ay, az, gx, gy, gz);
-heartRateSpO2.getData(heartRate, spo2, irValue, redValue);
-timeManager.getTime(currentTime, timeInitialized);
-// 2. Lấy trạng thái kết nối WiFi
-bool wifiConnected = ble.isWifiConnected(); // Hoặc từ TimeManager nếu nó quản lý WiFi
+    // 1. Luôn gọi tick() cho các nút bấm
+    button.tick();
 
-// 3. Cập nhật dữ liệu cho DisplayManager
-// Truyền tất cả dữ liệu cần thiết cho các chế độ hiển thị
-// display.updateData(wifiConnected, stepCount, distance, heartRate, spo2, &currentTime, timeInitialized);
-display.updateData(wifiConnected, &currentTime, timeInitialized);
+    // 2. Lấy dữ liệu từ các module
+    stepCounter.getData(stepCount, distance, ax, ay, az, gx, gy, gz);
+    heartRateSpO2.getData(heartRate, spo2, irValue, redValue);
+    barometer.getData(temperature, pressure); // <<< LẤY DỮ LIỆU BMP280
+    timeManager.getTime(currentTime, timeInitialized);
 
-// 4. Chuẩn bị và gửi dữ liệu qua BLE
-char timeStr[40];
-memset(timeStr, 0, sizeof(timeStr));
-if (timeInitialized) {
-    strftime(timeStr, sizeof(timeStr), "%Y-%m-%dT%H:%M:%S+07:00", &currentTime);
-} else {
-    strcpy(timeStr, "Not initialized");
-}
-// Gửi tất cả dữ liệu thu thập được
-ble.updateData(ax, ay, az, stepCount, heartRate, spo2, irValue, redValue, wifiConnected, gx, gy, gz, timeStr);
+    // 3. Lấy trạng thái WiFi
+    bool wifiConnected = ble.isWifiConnected(); // Hoặc WiFi.status() == WL_CONNECTED;
 
-// 5. Logic reset bước chân hàng ngày (Giữ nguyên)
-if (timeInitialized) {
-    int currentDay = currentTime.tm_mday;
-    if (lastDay != -1 && currentDay != lastDay && currentTime.tm_hour == 0 && currentTime.tm_min <= 1) {
-         Serial.println("New day detected, attempting to reset step count...");
-         // Nên có cơ chế reset trong StepCounter thay vì ghi trực tiếp ở đây
-         // Tạm thời giữ lại:
-         EEPROM.writeInt(STEP_COUNT_ADDR, 0);
-         if (EEPROM.commit()) {
-              Serial.println("Step count reset to 0 in EEPROM.");
-              // Cập nhật biến local để hiển thị đúng ngay lập tức
-              stepCount = 0;
-              distance = 0;
-         } else {
-              Serial.println("Failed to commit EEPROM for step count reset!");
-         }
-         // TODO: Thông báo cho StepCounter để reset stepCountLocal của nó
+    NavigationInfo navInfo = ble.getNavigationInfo();
+
+    // 4. Cập nhật DisplayManager với TẤT CẢ dữ liệu
+    display.updateData(wifiConnected, stepCount, distance, heartRate, spo2,
+                       temperature, pressure, // <<< TRUYỀN DỮ LIỆU BMP
+                       ax, ay, az, gx, gy, gz, // <<< TRUYỀN DỮ LIỆU IMU
+                       &currentTime, timeInitialized, navInfo);
+
+    // 5. Chuẩn bị và gửi dữ liệu qua BLE
+    char timeStr[40];
+    memset(timeStr, 0, sizeof(timeStr));
+    if (timeInitialized) strftime(timeStr, sizeof(timeStr), "%Y-%m-%dT%H:%M:%S+07:00", &currentTime);
+    else strcpy(timeStr, "Not initialized");
+    // Gọi hàm updateData của BLE với đủ tham số
+    ble.updateData(ax, ay, az, stepCount, heartRate, spo2, irValue, redValue, wifiConnected, gx, gy, gz,
+                   temperature, pressure, // <<< TRUYỀN DỮ LIỆU BMP
+                   timeStr);
+
+    // 6. Logic reset bước chân hàng ngày (SỬA LẠI)
+    if (timeInitialized) {
+        int currentDay = currentTime.tm_mday;
+        if (lastDay != -1 && currentDay != lastDay) { // Chỉ cần kiểm tra ngày thay đổi
+            // Kiểm tra thêm giờ để tránh reset nhiều lần nếu bị treo lúc nửa đêm
+            if (currentTime.tm_hour == 0 && currentTime.tm_min <= 5) { // Reset trong 5 phút đầu ngày mới
+                 Serial.println("New day detected, calling stepCounter.resetSteps()...");
+                 stepCounter.resetSteps(); // <<< GỌI HÀM RESET CỦA MODULE
+                 // Không cần reset biến stepCount/distance ở đây nữa
+                 lastDay = currentDay; // Cập nhật ngày ngay sau khi reset
+            }
+        } else if (lastDay == -1) {
+            lastDay = currentDay; // Khởi tạo lastDay lần đầu
+        }
     }
-    lastDay = currentDay;
-}
 
-// 6. Delay cho vòng lặp chính
-vTaskDelay(100 / portTICK_PERIOD_MS); // Tần suất cập nhật chung khoảng 10Hz
-
-}
+    // 7. Delay cho vòng lặp chính
+    vTaskDelay(pdMS_TO_TICKS(20)); // Giữ delay ngắn để OneButton nhạy
+} 
